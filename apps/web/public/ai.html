@@ -17,7 +17,7 @@
     <p class="hint">Opisz zakres prac, a asystent przygotuje roboczy plan działań, zadania i obszary ryzyka.</p>
     <span class="badge">Tryb przygotowania — integracja AI w kolejnym kroku</span>
     <section class="grid">
-      <form id="brief" class="card"><h2 style="margin-top:0">Opis inwestycji</h2><label class="field">Typ inwestycji<select name="type"><option>Dom jednorodzinny</option><option>Remont mieszkania</option><option>Obiekt komercyjny</option><option>Inne prace budowlane</option></select></label><label class="field">Lokalizacja<input name="location" placeholder="np. Warszawa" /></label><label class="field">Planowany budżet (PLN)<input name="budget" type="number" min="0" placeholder="np. 450000" /></label><label class="field">Zakres prac<textarea name="scope" required placeholder="np. Budowa domu 150 m², stan deweloperski, instalacje, elewacja…"></textarea></label><button class="primary">Przygotuj plan roboczy</button></form>
+      <form id="brief" class="card" novalidate><h2 style="margin-top:0">Opis inwestycji</h2><label class="field">Typ inwestycji<select name="type"><option>Dom jednorodzinny</option><option>Remont mieszkania</option><option>Obiekt komercyjny</option><option>Inne prace budowlane</option></select></label><label class="field">Lokalizacja<input name="location" placeholder="np. Warszawa" /></label><label class="field">Planowany budżet (PLN)<input name="budget" type="number" min="0" placeholder="np. 450000" /></label><label class="field">Zakres prac<textarea name="scope" placeholder="np. Budowa domu 150 m², stan deweloperski, instalacje, elewacja…"></textarea></label><button class="primary" type="submit">Przygotuj plan roboczy</button><p id="form-status" aria-live="polite" style="min-height:20px;margin:12px 0 0;color:#667085;font-size:14px"></p></form>
       <section class="card"><div id="empty" class="empty"><div><strong>Gotowy, gdy Ty jesteś</strong><p>Uzupełnij opis po lewej, aby zobaczyć przykładową strukturę analizy projektu.</p></div></div><div id="result" class="result"><h2>Propozycja planu projektu</h2><div class="result-section"><h3>Podsumowanie</h3><p id="summary" class="summary"></p></div><div class="result-section"><h3>Sugerowane etapy</h3><ul id="phases"></ul></div><div class="result-section"><h3>Kluczowe zadania</h3><ul id="tasks"></ul></div><div class="result-section"><h3>Ryzyka do sprawdzenia</h3><ul id="risks"></ul></div><div class="notice">To jest roboczy szablon interfejsu. Po podłączeniu AI będzie tworzony na podstawie pełnego opisu i danych Twojego projektu.</div></div></section>
     </section>
   </main>
@@ -63,10 +63,20 @@
       event.stopImmediatePropagation();
 
       const form = new FormData(event.target);
+      const scope = String(form.get('scope') || '').trim();
       const notice = document.querySelector('.notice');
+      const formStatus = document.querySelector('#form-status');
+      const result = document.querySelector('#result');
+      const empty = document.querySelector('#empty');
+      const showResult = () => {
+        empty.style.display = 'none';
+        result.classList.add('show');
+      };
       const responseError = message => {
+        showResult();
         notice.textContent = message;
         notice.style.color = '#b42318';
+        formStatus.textContent = '';
       };
       const renderList = (selector, values) => {
         const list = document.querySelector(selector);
@@ -77,6 +87,17 @@
         }));
       };
 
+      if (!scope) {
+        responseError('Uzupełnij pole „Zakres prac”, aby przygotować plan.');
+        return;
+      }
+      if (!localStorage.getItem('buildsmart_token')) {
+        responseError('Zaloguj się w panelu BuildSmart AI, a następnie spróbuj ponownie.');
+        return;
+      }
+
+      showResult();
+      formStatus.textContent = 'Trwa przygotowywanie planu…';
       notice.textContent = 'Asystent AI analizuje opis inwestycji…';
       notice.style.color = '#175cd3';
       try {
@@ -87,7 +108,7 @@
             project_type: form.get('type'),
             location: form.get('location') || null,
             budget: form.get('budget') ? Number(form.get('budget')) : null,
-            scope: form.get('scope'),
+            scope,
           }),
         });
         const data = await response.json().catch(() => ({}));
@@ -97,9 +118,9 @@
         renderList('#phases', data.phases);
         renderList('#tasks', data.tasks);
         renderList('#risks', data.risks);
-        document.querySelector('#empty').style.display = 'none';
-        document.querySelector('#result').classList.add('show');
         notice.textContent = 'Plan został wygenerowany przez AI. Zweryfikuj go z osobą posiadającą odpowiednie uprawnienia.';
+        notice.style.color = '#175cd3';
+        formStatus.textContent = 'Plan jest gotowy.';
       } catch (error) {
         responseError(error.message);
       }
