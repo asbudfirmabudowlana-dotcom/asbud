@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Plany — BuildSmart AI</title>
+  <style>
+    :root { --ink:#172033; --muted:#667085; --line:#e5e7eb; --gold:#f6b61a; --nav:#101828; } *{box-sizing:border-box} body{margin:0;background:#f6f7f9;color:var(--ink);font-family:Arial,sans-serif}.top{background:var(--nav);color:white;padding:19px max(24px,calc((100% - 1120px)/2))}.brand{font-size:20px;font-weight:800}.brand b{color:var(--gold)}main{width:min(1120px,100%);margin:auto;padding:45px 24px}.back{color:#175cd3;text-decoration:none;font-size:14px;font-weight:700}.eyebrow{color:var(--muted);font-size:14px;margin:28px 0 6px}h1{margin:0;font-size:34px}.hint{color:var(--muted);line-height:1.5}.current{display:inline-block;padding:7px 11px;border-radius:8px;color:#175cd3;background:#eff8ff;font-weight:700}.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:28px}.plan{position:relative;background:white;border:1px solid var(--line);border-radius:15px;padding:23px;box-shadow:0 1px 2px #1018280d}.plan.featured{border:2px solid var(--gold)}.tag{position:absolute;top:-12px;right:18px;border-radius:20px;padding:5px 10px;color:#172033;background:var(--gold);font-size:12px;font-weight:800}.plan h2{margin:0;font-size:20px}.price{margin:17px 0;font-size:31px;font-weight:800}.price small{color:var(--muted);font-size:14px;font-weight:500}.features{min-height:120px;padding:0;list-style:none;color:var(--muted);font-size:14px;line-height:2}.choose{width:100%;padding:11px;border:0;border-radius:8px;background:#101828;color:white;font-weight:700;cursor:pointer}.featured .choose{background:var(--gold);color:#172033}#message{min-height:24px;margin-top:20px;color:#175cd3;font-weight:600}@media(max-width:760px){.plans{grid-template-columns:1fr}h1{font-size:28px}}
+  </style>
+</head>
+<body>
+  <header class="top"><div class="brand">BuildSmart <b>AI</b></div></header>
+  <main>
+    <a class="back" href="/">← Wróć do panelu</a>
+    <p class="eyebrow">Subskrypcja BuildSmart AI</p>
+    <h1>Wybierz plan dla firmy</h1>
+    <p class="hint">Obecny plan: <span id="current" class="current">Wczytywanie…</span></p>
+    <section class="plans">
+      <article class="plan"><h2>Free</h2><div class="price">0 zł <small>/ mies.</small></div><ul class="features"><li>✓ 1 użytkownik</li><li>✓ 3 aktywne projekty</li><li>✓ Klienci i zadania</li></ul><button class="choose" data-plan="free">Wybierz Free</button></article>
+      <article class="plan featured"><span class="tag">Najczęściej wybierany</span><h2>Basic</h2><div class="price">99 zł <small>/ mies.</small></div><ul class="features"><li>✓ 5 użytkowników</li><li>✓ Nielimitowane projekty</li><li>✓ Faktury i zespół</li><li>✓ Wsparcie e-mail</li></ul><button class="choose" data-plan="basic">Wybierz Basic</button></article>
+      <article class="plan"><h2>Professional</h2><div class="price">249 zł <small>/ mies.</small></div><ul class="features"><li>✓ 20 użytkowników</li><li>✓ Raporty i automatyzacje</li><li>✓ Priorytetowe wsparcie</li><li>✓ Integracje</li></ul><button class="choose" data-plan="professional">Wybierz Professional</button></article>
+    </section>
+    <p id="message"></p>
+  </main>
+  <script>
+    const api = '/api/v1';
+    const token = localStorage.getItem('buildsmart_token');
+    if (!token) location.assign('/');
+    const labels = { free:'Free', basic:'Basic', professional:'Professional', enterprise:'Enterprise' };
+    async function request(path, options = {}) { const response = await fetch(api + path, { ...options, headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token, ...(options.headers || {}) } }); const data = await response.json().catch(() => ({})); if (!response.ok) throw Error(data.detail || 'Nie udało się połączyć z serwerem.'); return data; }
+    async function load() { const subscription = await request('/billing/subscription'); const suffix = subscription.status === 'trial' ? ' — okres próbny do ' + new Date(subscription.trial_ends_at).toLocaleDateString('pl-PL') : ''; document.querySelector('#current').textContent = labels[subscription.plan] + suffix; }
+    document.querySelectorAll('.choose').forEach(button => button.onclick = async () => { const message = document.querySelector('#message'); message.textContent = ''; try { const subscription = await request('/billing/plan', { method:'POST', body:JSON.stringify({ plan:button.dataset.plan }) }); await load(); message.textContent = subscription.plan === 'free' ? 'Wybrano plan Free.' : 'Plan wybrany. Rozpoczął się bezpłatny 14-dniowy okres próbny. Płatności podłączymy w kolejnym kroku.'; } catch (error) { message.textContent = error.message; } });
+    load().catch(error => document.querySelector('#message').textContent = error.message);
+  </script>
+</body>
+</html>
