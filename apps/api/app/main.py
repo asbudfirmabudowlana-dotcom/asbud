@@ -287,7 +287,10 @@ def parse_project_plan_response(response_data: dict) -> dict:
 
 @app.post("/api/v1/ai/project-plan", response_model=AiProjectPlanResponse)
 def generate_project_plan(data: AiProjectPlanRequest, user: User = Depends(get_current_user)):
-    if not settings.openai_api_key:
+    # Hosted platforms can accidentally add a trailing line break when a secret is pasted.
+    # Strip surrounding whitespace before using the value as an HTTP header.
+    api_key = settings.openai_api_key.strip() if settings.openai_api_key else ""
+    if not api_key:
         raise HTTPException(status_code=503, detail="AI is not configured. Add OPENAI_API_KEY to the server environment.")
 
     prompt = f"""Jesteś asystentem kierownika projektów budowlanych w Polsce.
@@ -331,7 +334,7 @@ oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
                 "safety_identifier": f"company-{user.company_id}",
             }).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -353,7 +356,8 @@ oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
     except (URLError, TimeoutError) as exc:
         raise HTTPException(status_code=503, detail="The AI server cannot reach OpenAI. Check the server network connection.") from exc
     except (json.JSONDecodeError, ValueError) as exc:
-        print(f"AI project plan parsing failed: {type(exc).__name__}: {exc}", flush=True)
+        # Do not log the exception text: HTTP client errors can contain request headers.
+        print(f"AI project plan response could not be processed ({type(exc).__name__}).", flush=True)
         raise HTTPException(status_code=502, detail="AI returned an invalid project plan") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI generation is temporarily unavailable") from exc
