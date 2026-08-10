@@ -259,8 +259,19 @@ Lokalizacja: {data.location or 'nie podano'}
 Budżet orientacyjny: {data.budget if data.budget is not None else 'nie podano'} PLN
 Zakres prac: {data.scope}
 
-Zwróć WYŁĄCZNIE poprawny JSON bez znaków markdown, zgodny z tym schematem:
-{{"summary":"krótkie podsumowanie", "phases":["3-6 etapów"], "tasks":["4-8 konkretnych zadań"], "risks":["3-6 ryzyk do weryfikacji"]}}"""
+Wypełnij wszystkie pola zdefiniowanego formatu odpowiedzi. Podaj 3–6 etapów, 4–8 zadań
+oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
+    project_plan_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "phases": {"type": "array", "items": {"type": "string"}},
+            "tasks": {"type": "array", "items": {"type": "string"}},
+            "risks": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "phases", "tasks", "risks"],
+    }
     try:
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -268,7 +279,15 @@ Zwróć WYŁĄCZNIE poprawny JSON bez znaków markdown, zgodny z tym schematem:
                 "model": settings.openai_model,
                 "input": prompt,
                 "reasoning": {"effort": "medium"},
-                "text": {"verbosity": "medium"},
+                "text": {
+                    "verbosity": "medium",
+                    "format": {
+                        "type": "json_schema",
+                        "name": "project_plan",
+                        "strict": True,
+                        "schema": project_plan_schema,
+                    },
+                },
                 "safety_identifier": f"company-{user.company_id}",
             }).encode("utf-8"),
             headers={
@@ -279,12 +298,16 @@ Zwróć WYŁĄCZNIE poprawny JSON bez znaków markdown, zgodny z tym schematem:
         )
         with urlopen(request, timeout=60) as response:
             response_data = json.loads(response.read().decode("utf-8"))
-        output_text = "".join(
-            content.get("text", "")
-            for item in response_data.get("output", [])
-            for content in item.get("content", [])
-            if content.get("type") == "output_text"
-        )
+        output_text = response_data.get("output_text", "")
+        if not isinstance(output_text, str) or not output_text.strip():
+            output_text = "".join(
+                content.get("text", "")
+                for item in response_data.get("output", [])
+                for content in item.get("content", [])
+                if content.get("type") == "output_text"
+            )
+        if not output_text.strip():
+            raise ValueError("OpenAI did not return a structured text response")
         payload = json.loads(output_text)
         return AiProjectPlanResponse.model_validate(payload)
     except HTTPError as exc:
