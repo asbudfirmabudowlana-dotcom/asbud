@@ -245,6 +245,46 @@ def select_subscription_plan(data: SubscriptionPlanUpdate, user: User = Depends(
     return subscription
 
 
+def parse_project_plan_response(response_data: dict) -> dict:
+    """Read structured Responses API output while tolerating SDK and REST shapes."""
+    candidates: list[str] = []
+    direct_output = response_data.get("output_text")
+    if isinstance(direct_output, str):
+        candidates.append(direct_output)
+
+    content_types: list[str] = []
+    for output_item in response_data.get("output", []):
+        if not isinstance(output_item, dict):
+            continue
+        for content in output_item.get("content", []):
+            if not isinstance(content, dict):
+                continue
+            content_type = content.get("type")
+            if isinstance(content_type, str):
+                content_types.append(content_type)
+            text = content.get("text")
+            if isinstance(text, str):
+                candidates.append(text)
+            for key in ("parsed", "json"):
+                value = content.get(key)
+                if isinstance(value, dict):
+                    return value
+
+    for candidate in candidates:
+        normalized = candidate.strip().lstrip("\ufeff")
+        if normalized.startswith("```"):
+            normalized = normalized.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        try:
+            payload = json.loads(normalized)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    reported_types = ", ".join(sorted(set(content_types))) or "brak tekstu"
+    raise ValueError(f"OpenAI response did not contain a JSON project plan (content types: {reported_types})")
+
+
 @app.post("/api/v1/ai/project-plan", response_model=AiProjectPlanResponse)
 def generate_project_plan(data: AiProjectPlanRequest, user: User = Depends(get_current_user)):
     if not settings.openai_api_key:
@@ -266,9 +306,9 @@ oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
         "additionalProperties": False,
         "properties": {
             "summary": {"type": "string"},
-            "phases": {"type": "array", "items": {"type": "string"}},
-            "tasks": {"type": "array", "items": {"type": "string"}},
-            "risks": {"type": "array", "items": {"type": "string"}},
+            "phases": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 6},
+            "tasks": {"type": "array", "items": {"type": "string"}, "minItems": 4, "maxItems": 8},
+            "risks": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 6},
         },
         "required": ["summary", "phases", "tasks", "risks"],
     }
@@ -298,17 +338,7 @@ oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
         )
         with urlopen(request, timeout=60) as response:
             response_data = json.loads(response.read().decode("utf-8"))
-        output_text = response_data.get("output_text", "")
-        if not isinstance(output_text, str) or not output_text.strip():
-            output_text = "".join(
-                content.get("text", "")
-                for item in response_data.get("output", [])
-                for content in item.get("content", [])
-                if content.get("type") == "output_text"
-            )
-        if not output_text.strip():
-            raise ValueError("OpenAI did not return a structured text response")
-        payload = json.loads(output_text)
+        payload = parse_project_plan_response(response_data)
         return AiProjectPlanResponse.model_validate(payload)
     except HTTPError as exc:
         if exc.code == 401:
@@ -323,6 +353,7 @@ oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
     except (URLError, TimeoutError) as exc:
         raise HTTPException(status_code=503, detail="The AI server cannot reach OpenAI. Check the server network connection.") from exc
     except (json.JSONDecodeError, ValueError) as exc:
+        print(f"AI project plan parsing failed: {type(exc).__name__}: {exc}", flush=True)
         raise HTTPException(status_code=502, detail="AI returned an invalid project plan") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI generation is temporarily unavailable") from exc
