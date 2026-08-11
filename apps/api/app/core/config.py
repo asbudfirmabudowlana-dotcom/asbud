@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-terra"
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
+    stripe_price_basic_monthly: str | None = None
+    stripe_price_basic_yearly: str | None = None
+    stripe_price_professional_monthly: str | None = None
+    stripe_price_professional_yearly: str | None = None
+    # Zachowane dla zgodności z wcześniejszą konfiguracją: cena miesięczna.
     stripe_price_basic: str | None = None
     stripe_price_professional: str | None = None
     app_base_url: str = "http://localhost:8000"
