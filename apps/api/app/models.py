@@ -177,6 +177,6 @@ class ClientCompanyDetails(Base):
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), unique=True, index=True)
     nip: Mapped[str] = mapped_column(String(10), index=True)
     regon: Mapped[str | None] = mapped_column(String(14), nullable=True)
-    gus_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    gus_address: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Existing database column names are retained so an upgrade does not require data migration.
+    company_name: Mapped[str] = mapped_column("gus_name", String(255), nullable=False)
+    company_address: Mapped[str | None] = mapped_column("gus_address", String(300), nullable=True)
