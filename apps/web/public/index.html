@@ -80,18 +80,6 @@
       const authForm = document.querySelector('#auth-form');
       const authError = document.querySelector('#auth-error');
       const switchAuth = document.querySelector('#switch-auth');
-      let pendingEmail = '';
-
-      const verificationForm = document.createElement('form');
-      verificationForm.id = 'verification-form';
-      verificationForm.className = 'hidden';
-      verificationForm.innerHTML = `
-        <p class="hint">Wysłaliśmy 6-cyfrowy kod na adres <strong id="verification-email"></strong>.</p>
-        <label class="field">Kod weryfikacyjny<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="\\d{6}" maxlength="6" required /></label>
-        <p id="verification-error" class="error"></p>
-        <button class="primary" type="submit">Potwierdź adres e-mail</button>
-        <p class="hint" style="text-align:center;margin:16px 0 0"><button id="resend-code" class="link" type="button">Wyślij kod ponownie</button></p>`;
-      authForm.after(verificationForm);
 
       async function apiRequest(path, options = {}) {
         const response = await fetch('/api/v1' + path, {
@@ -102,19 +90,6 @@
         if (!response.ok) throw Error(data.detail || 'Nie udało się połączyć z serwerem.');
         return data;
       }
-      function showVerification(email, message = '') {
-        pendingEmail = email;
-        document.querySelector('#verification-email').textContent = email;
-        document.querySelector('#verification-error').textContent = message;
-        authForm.classList.add('hidden');
-        verificationForm.classList.remove('hidden');
-        verificationForm.querySelector('[name="code"]').focus();
-      }
-      switchAuth.onclick = () => {
-        setAuthMode(!register);
-        verificationForm.classList.add('hidden');
-        authForm.classList.remove('hidden');
-      };
       authForm.onsubmit = async event => {
         event.preventDefault();
         const form = new FormData(authForm);
@@ -122,35 +97,15 @@
         authError.textContent = '';
         try {
           if (register) {
-            await apiRequest('/auth/register', { method: 'POST', body: JSON.stringify({ company_name: form.get('company_name'), full_name: form.get('full_name'), email, password: form.get('password') }) });
-            showVerification(email);
+            const data = await apiRequest('/auth/register', { method: 'POST', body: JSON.stringify({ company_name: form.get('company_name'), full_name: form.get('full_name'), email, password: form.get('password') }) });
+            localStorage.setItem('buildsmart_token', data.access_token);
+            showApp();
           } else {
             const data = await apiRequest('/auth/login', { method: 'POST', body: JSON.stringify({ email, password: form.get('password') }) });
             localStorage.setItem('buildsmart_token', data.access_token);
             showApp();
           }
-        } catch (error) {
-          if (!register && /Verify your email/i.test(error.message)) showVerification(email, 'Najpierw potwierdź adres e-mail.');
-          else authError.textContent = error.message;
-        }
-      };
-      verificationForm.onsubmit = async event => {
-        event.preventDefault();
-        const error = document.querySelector('#verification-error');
-        error.textContent = '';
-        try {
-          const code = String(new FormData(verificationForm).get('code') || '').trim();
-          const data = await apiRequest('/auth/verify-email', { method: 'POST', body: JSON.stringify({ email: pendingEmail, code }) });
-          localStorage.setItem('buildsmart_token', data.access_token);
-          showApp();
-        } catch (failure) { error.textContent = failure.message; }
-      };
-      verificationForm.querySelector('#resend-code').onclick = async () => {
-        const error = document.querySelector('#verification-error');
-        try {
-          await apiRequest('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: pendingEmail }) });
-          error.style.color = '#067647'; error.textContent = 'Wysłaliśmy nowy kod.';
-        } catch (failure) { error.style.color = '#b42318'; error.textContent = failure.message; }
+        } catch (error) { authError.textContent = error.message; }
       };
 
       const clientForm = document.querySelector('#client-form');
