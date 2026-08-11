@@ -204,6 +204,34 @@ class EstimateItem(Base):
     unit_price: Mapped[float] = mapped_column(Numeric(14, 2))
 
 
+class EstimateDetails(Base):
+    __tablename__ = "estimate_details"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    estimate_id: Mapped[int] = mapped_column(ForeignKey("estimates.id", ondelete="CASCADE"), unique=True, index=True)
+    issuer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issuer_nip: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    issuer_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issuer_postal_code: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    issuer_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    issuer_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recipient_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recipient_nip: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    recipient_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recipient_postal_code: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    recipient_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    recipient_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
+class EstimateAttachment(Base):
+    __tablename__ = "estimate_attachments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    estimate_id: Mapped[int] = mapped_column(ForeignKey("estimates.id", ondelete="CASCADE"), index=True)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ClientCompanyDetails(Base):
     __tablename__ = "client_company_details"
     id: Mapped[int] = mapped_column(primary_key=True)
