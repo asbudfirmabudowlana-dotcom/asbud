@@ -159,3 +159,24 @@ class EstimateItem(Base):
     quantity: Mapped[float] = mapped_column(Numeric(12, 3))
     unit: Mapped[str] = mapped_column(String(30), default="szt.")
     unit_price: Mapped[float] = mapped_column(Numeric(14, 2))
+
+
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClientCompanyDetails(Base):
+    __tablename__ = "client_company_details"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), unique=True, index=True)
+    nip: Mapped[str] = mapped_column(String(10), index=True)
+    regon: Mapped[str | None] = mapped_column(String(14), nullable=True)
+    gus_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    gus_address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
