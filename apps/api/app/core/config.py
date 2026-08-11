@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-terra"
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_price_basic: str | None = None
+    stripe_price_professional: str | None = None
+    app_base_url: str = "http://localhost:8000"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
