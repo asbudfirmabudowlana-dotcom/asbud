@@ -1,6 +1,5 @@
 import hashlib
 import hmac
-import html
 import json
 import secrets
 import smtplib
@@ -9,8 +8,6 @@ from email.message import EmailMessage
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from datetime import datetime, timedelta, timezone
-from xml.etree import ElementTree as ET
-from xml.sax.saxutils import escape as xml_escape
 import stripe
 from fastapi import Depends, FastAPI, HTTPException, Request as FastAPIRequest, status
 from fastapi.responses import RedirectResponse
@@ -21,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
 from app.models import Client, ClientCompanyDetails, Company, EmailVerification, Employee, Estimate, EstimateItem, Invoice, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
-from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, DashboardResponse, EmailVerificationRequest, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, GusCompanyLookupRequest, GusCompanyLookupResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, RegistrationResponse, ResendVerificationRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
+from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, DashboardResponse, EmailVerificationRequest, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, RegistrationResponse, ResendVerificationRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
 from app.security import create_access_token, get_current_user, hash_password, verify_password
 
 settings = get_settings()
@@ -179,73 +176,6 @@ def normalize_nip(value: str) -> str:
     return nip
 
 
-def xml_local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
-
-
-def xml_value(root: ET.Element, field: str) -> str | None:
-    for element in root.iter():
-        if xml_local_name(element.tag) == field and element.text and element.text.strip():
-            return element.text.strip()
-    return None
-
-
-def gus_soap_call(action: str, operation: str, operation_body: str, session_id: str | None = None) -> ET.Element:
-    endpoint = settings.gus_regon_endpoint.strip()
-    envelope = f'''<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:bir="http://CIS/BIR/PUBL/2014/07" xmlns:dat="http://CIS/BIR/PUBL/2014/07/DataContract" xmlns:wsa="http://www.w3.org/2005/08/addressing">
-  <soap:Header>
-    <wsa:To>{xml_escape(endpoint)}</wsa:To>
-    <wsa:Action>http://CIS/BIR/PUBL/2014/07/IUslugaBIRzewnPubl/{action}</wsa:Action>
-  </soap:Header>
-  <soap:Body><bir:{operation}>{operation_body}</bir:{operation}></soap:Body>
-</soap:Envelope>'''
-    headers = {
-        "Content-Type": f'application/soap+xml; charset=utf-8; action="http://CIS/BIR/PUBL/2014/07/IUslugaBIRzewnPubl/{action}"',
-    }
-    if session_id:
-        headers["sid"] = session_id
-    request = Request(endpoint, data=envelope.encode("utf-8"), headers=headers, method="POST")
-    with urlopen(request, timeout=20) as response:
-        return ET.fromstring(response.read())
-
-
-def lookup_company_in_gus(nip_input: str) -> GusCompanyLookupResponse:
-    api_key = settings.gus_regon_api_key.strip() if settings.gus_regon_api_key else ""
-    if not api_key:
-        raise HTTPException(status_code=503, detail="GUS verification is not configured. Add GUS_REGON_API_KEY to the server environment.")
-    nip = normalize_nip(nip_input)
-    try:
-        login = gus_soap_call("Zaloguj", "Zaloguj", f"<bir:pKluczUzytkownika>{xml_escape(api_key)}</bir:pKluczUzytkownika>")
-        session_id = xml_value(login, "ZalogujResult")
-        if not session_id:
-            raise ValueError("missing GUS session")
-        search_body = f"<bir:pParametryWyszukiwania><dat:Nip>{nip}</dat:Nip></bir:pParametryWyszukiwania>"
-        search = gus_soap_call("DaneSzukajPodmioty", "DaneSzukajPodmioty", search_body, session_id)
-        encoded_result = xml_value(search, "DaneSzukajPodmiotyResult")
-        if not encoded_result:
-            raise HTTPException(status_code=404, detail="No company was found in the GUS REGON database for this NIP.")
-        result_root = ET.fromstring(html.unescape(encoded_result))
-        record = next((item for item in result_root.iter() if xml_local_name(item.tag).lower() == "dane"), result_root)
-        name = xml_value(record, "Nazwa")
-        if not name:
-            raise HTTPException(status_code=404, detail="No company was found in the GUS REGON database for this NIP.")
-        address_parts = [
-            " ".join(part for part in [xml_value(record, "Ulica"), xml_value(record, "NrNieruchomosci"), xml_value(record, "NrLokalu")] if part),
-            " ".join(part for part in [xml_value(record, "KodPocztowy"), xml_value(record, "Miejscowosc")] if part),
-        ]
-        return GusCompanyLookupResponse(
-            name=name,
-            nip=nip,
-            regon=xml_value(record, "Regon"),
-            address=", ".join(part for part in address_parts if part) or None,
-        )
-    except HTTPException:
-        raise
-    except (HTTPError, URLError, TimeoutError, ET.ParseError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail="GUS verification is temporarily unavailable. Please try again later.") from exc
-
-
 def serialize_client(client: Client, db: Session) -> ClientResponse:
     details = db.scalar(select(ClientCompanyDetails).where(ClientCompanyDetails.client_id == client.id))
     return ClientResponse(
@@ -262,11 +192,6 @@ def serialize_client(client: Client, db: Session) -> ClientResponse:
     )
 
 
-@app.post("/api/v1/clients/gus-lookup", response_model=GusCompanyLookupResponse)
-def gus_company_lookup(data: GusCompanyLookupRequest, user: User = Depends(get_current_user)):
-    return lookup_company_in_gus(data.nip)
-
-
 @app.get("/api/v1/clients", response_model=list[ClientResponse])
 def list_clients(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     clients = db.scalars(select(Client).where(Client.company_id == user.company_id).order_by(Client.created_at.desc())).all()
@@ -276,22 +201,19 @@ def list_clients(user: User = Depends(get_current_user), db: Session = Depends(g
 @app.post("/api/v1/clients", response_model=ClientResponse, status_code=status.HTTP_201_CREATED)
 def create_client(data: ClientCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     values = data.model_dump(exclude={"entity_type", "nip"})
-    company_details: GusCompanyLookupResponse | None = None
+    nip: str | None = None
     if data.entity_type == "company":
         if not data.nip:
-            raise HTTPException(status_code=422, detail="Enter a NIP number to verify a company in GUS.")
-        company_details = lookup_company_in_gus(data.nip)
-        values["name"] = company_details.name
-        values["address"] = company_details.address or values.get("address")
+            raise HTTPException(status_code=422, detail="Enter a NIP number for the company.")
+        nip = normalize_nip(data.nip)
     client = Client(company_id=user.company_id, **values)
     db.add(client); db.commit(); db.refresh(client)
-    if company_details:
+    if nip:
         db.add(ClientCompanyDetails(
             client_id=client.id,
-            nip=company_details.nip,
-            regon=company_details.regon,
-            gus_name=company_details.name,
-            gus_address=company_details.address,
+            nip=nip,
+            company_name=client.name,
+            company_address=client.address,
         ))
         db.commit()
     return serialize_client(client, db)
