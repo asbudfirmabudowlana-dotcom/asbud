@@ -75,5 +75,139 @@
     subscriptionButton.addEventListener('click', () => location.assign('/plans.html'));
     document.querySelector('#logout').before(subscriptionButton);
   </script>
+  <script>
+    (() => {
+      const authForm = document.querySelector('#auth-form');
+      const authError = document.querySelector('#auth-error');
+      const switchAuth = document.querySelector('#switch-auth');
+      let pendingEmail = '';
+
+      const verificationForm = document.createElement('form');
+      verificationForm.id = 'verification-form';
+      verificationForm.className = 'hidden';
+      verificationForm.innerHTML = `
+        <p class="hint">Wysłaliśmy 6-cyfrowy kod na adres <strong id="verification-email"></strong>.</p>
+        <label class="field">Kod weryfikacyjny<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="\\d{6}" maxlength="6" required /></label>
+        <p id="verification-error" class="error"></p>
+        <button class="primary" type="submit">Potwierdź adres e-mail</button>
+        <p class="hint" style="text-align:center;margin:16px 0 0"><button id="resend-code" class="link" type="button">Wyślij kod ponownie</button></p>`;
+      authForm.after(verificationForm);
+
+      async function apiRequest(path, options = {}) {
+        const response = await fetch('/api/v1' + path, {
+          ...options,
+          headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw Error(data.detail || 'Nie udało się połączyć z serwerem.');
+        return data;
+      }
+      function showVerification(email, message = '') {
+        pendingEmail = email;
+        document.querySelector('#verification-email').textContent = email;
+        document.querySelector('#verification-error').textContent = message;
+        authForm.classList.add('hidden');
+        verificationForm.classList.remove('hidden');
+        verificationForm.querySelector('[name="code"]').focus();
+      }
+      switchAuth.onclick = () => {
+        setAuthMode(!register);
+        verificationForm.classList.add('hidden');
+        authForm.classList.remove('hidden');
+      };
+      authForm.onsubmit = async event => {
+        event.preventDefault();
+        const form = new FormData(authForm);
+        const email = String(form.get('email') || '').trim();
+        authError.textContent = '';
+        try {
+          if (register) {
+            await apiRequest('/auth/register', { method: 'POST', body: JSON.stringify({ company_name: form.get('company_name'), full_name: form.get('full_name'), email, password: form.get('password') }) });
+            showVerification(email);
+          } else {
+            const data = await apiRequest('/auth/login', { method: 'POST', body: JSON.stringify({ email, password: form.get('password') }) });
+            localStorage.setItem('buildsmart_token', data.access_token);
+            showApp();
+          }
+        } catch (error) {
+          if (!register && /Verify your email/i.test(error.message)) showVerification(email, 'Najpierw potwierdź adres e-mail.');
+          else authError.textContent = error.message;
+        }
+      };
+      verificationForm.onsubmit = async event => {
+        event.preventDefault();
+        const error = document.querySelector('#verification-error');
+        error.textContent = '';
+        try {
+          const code = String(new FormData(verificationForm).get('code') || '').trim();
+          const data = await apiRequest('/auth/verify-email', { method: 'POST', body: JSON.stringify({ email: pendingEmail, code }) });
+          localStorage.setItem('buildsmart_token', data.access_token);
+          showApp();
+        } catch (failure) { error.textContent = failure.message; }
+      };
+      verificationForm.querySelector('#resend-code').onclick = async () => {
+        const error = document.querySelector('#verification-error');
+        try {
+          await apiRequest('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: pendingEmail }) });
+          error.style.color = '#067647'; error.textContent = 'Wysłaliśmy nowy kod.';
+        } catch (failure) { error.style.color = '#b42318'; error.textContent = failure.message; }
+      };
+
+      const clientForm = document.querySelector('#client-form');
+      const clientName = clientForm.querySelector('[name="name"]');
+      const clientEmail = clientForm.querySelector('[name="email"]');
+      const clientPhone = clientForm.querySelector('[name="phone"]');
+      const clientAddress = clientForm.querySelector('[name="address"]');
+      const clientError = document.querySelector('#client-error');
+      const type = document.createElement('select');
+      type.name = 'entity_type';
+      type.innerHTML = '<option value="individual">Osoba fizyczna</option><option value="company">Firma</option>';
+      const companyFields = document.createElement('div');
+      companyFields.className = 'hidden';
+      companyFields.innerHTML = '<input name="nip" inputmode="numeric" maxlength="13" placeholder="NIP firmy" /><button id="gus-lookup" type="button">Sprawdź NIP w GUS</button><small id="gus-status" class="hint"></small>';
+      clientName.before(type);
+      clientName.after(companyFields);
+      const nipInput = companyFields.querySelector('[name="nip"]');
+      const gusStatus = companyFields.querySelector('#gus-status');
+      const gusLookup = companyFields.querySelector('#gus-lookup');
+
+      function updateClientType() {
+        const company = type.value === 'company';
+        companyFields.classList.toggle('hidden', !company);
+        clientName.readOnly = company;
+        clientName.placeholder = company ? 'Nazwa zostanie pobrana z GUS' : 'Imię i nazwisko';
+        if (!company) { nipInput.value = ''; gusStatus.textContent = ''; }
+      }
+      type.addEventListener('change', updateClientType);
+      gusLookup.onclick = async () => {
+        gusStatus.style.color = '#175cd3'; gusStatus.textContent = 'Sprawdzam w GUS…';
+        try {
+          const company = await request('/clients/gus-lookup', { method: 'POST', body: JSON.stringify({ nip: nipInput.value }) });
+          clientName.value = company.name;
+          if (company.address) clientAddress.value = company.address;
+          gusStatus.style.color = '#067647';
+          gusStatus.textContent = `Zweryfikowano: ${company.name}${company.regon ? ' · REGON ' + company.regon : ''}`;
+        } catch (failure) { gusStatus.style.color = '#b42318'; gusStatus.textContent = failure.message; }
+      };
+      loadClients = async () => {
+        const items = await request('/clients');
+        clientList.innerHTML = items.length ? items.map(client => {
+          const details = [client.entity_type === 'company' ? 'Firma' : 'Osoba fizyczna', client.nip ? 'NIP ' + client.nip : '', client.email, client.phone, client.address].filter(Boolean).join(' · ');
+          return `<li class="item"><strong>${escape(client.name)}</strong><small>${escape(details)}</small></li>`;
+        }).join('') : '<li class="item"><small>Nie dodano jeszcze klienta.</small></li>';
+      };
+      clientForm.onsubmit = async event => {
+        event.preventDefault();
+        const form = new FormData(clientForm);
+        clientError.textContent = '';
+        try {
+          await request('/clients', { method: 'POST', body: JSON.stringify({ name: form.get('name'), entity_type: form.get('entity_type'), nip: form.get('entity_type') === 'company' ? form.get('nip') : null, email: form.get('email') || null, phone: form.get('phone') || null, address: form.get('address') || null }) });
+          clientForm.reset(); updateClientType(); gusStatus.textContent = '';
+          await Promise.all([loadClients(), loadDashboard()]);
+        } catch (failure) { clientError.textContent = failure.message; }
+      };
+      updateClientType();
+    })();
+  </script>
 </body>
 </html>
