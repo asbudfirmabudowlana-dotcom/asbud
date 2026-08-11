@@ -1,13 +1,7 @@
-import hashlib
-import hmac
 import json
-import secrets
-import smtplib
 from pathlib import Path
-from email.message import EmailMessage
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from datetime import datetime, timedelta, timezone
 import stripe
 from fastapi import Depends, FastAPI, HTTPException, Request as FastAPIRequest, status
 from fastapi.responses import RedirectResponse
@@ -17,8 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
-from app.models import Client, ClientCompanyDetails, Company, EmailVerification, Employee, Estimate, EstimateItem, Invoice, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
-from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, DashboardResponse, EmailVerificationRequest, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, RegistrationResponse, ResendVerificationRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
+from app.models import Client, ClientCompanyDetails, Company, Employee, Estimate, EstimateItem, Invoice, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
+from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
 from app.security import create_access_token, get_current_user, hash_password, verify_password
 
 settings = get_settings()
@@ -45,69 +39,10 @@ def health():
     return {"status": "ok"}
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def email_delivery_is_configured() -> bool:
-    return bool(settings.smtp_host and settings.smtp_from)
-
-
-def normalize_datetime(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
-def verification_for_user(user_id: int, db: Session) -> EmailVerification | None:
-    return db.scalar(select(EmailVerification).where(EmailVerification.user_id == user_id))
-
-
-def send_verification_email(recipient: str, code: str) -> None:
-    if not email_delivery_is_configured():
-        raise HTTPException(status_code=503, detail="Email verification is not configured. Add SMTP settings to the server environment.")
-
-    message = EmailMessage()
-    message["Subject"] = "Kod weryfikacyjny BuildSmart AI"
-    message["From"] = settings.smtp_from
-    message["To"] = recipient
-    message.set_content(
-        f"Twój kod weryfikacyjny BuildSmart AI: {code}\n\n"
-        "Kod jest ważny przez 15 minut. Jeśli nie zakładałeś konta, zignoruj tę wiadomość."
-    )
-    try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
-            if settings.smtp_use_tls:
-                smtp.starttls()
-            if settings.smtp_username and settings.smtp_password:
-                smtp.login(settings.smtp_username, settings.smtp_password)
-            smtp.send_message(message)
-    except (OSError, smtplib.SMTPException) as exc:
-        raise HTTPException(status_code=503, detail="We could not send the verification email. Please try again later.") from exc
-
-
-def issue_verification_code(user: User, db: Session) -> None:
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    record = verification_for_user(user.id, db)
-    if not record:
-        record = EmailVerification(user_id=user.id, code_hash="", expires_at=utc_now())
-        db.add(record)
-    record.code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
-    record.expires_at = utc_now() + timedelta(minutes=15)
-    record.verified_at = None
-    db.commit()
-    send_verification_email(user.email, code)
-
-
-def user_needs_email_verification(user: User, db: Session) -> bool:
-    record = verification_for_user(user.id, db)
-    return bool(record and not record.verified_at)
-
-
-@app.post("/api/v1/auth/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.email == data.email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
-    if not email_delivery_is_configured():
-        raise HTTPException(status_code=503, detail="Email verification is not configured. Add SMTP settings to the server environment.")
     company = Company(name=data.company_name)
     db.add(company)
     db.flush()
@@ -115,8 +50,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
-    issue_verification_code(user, db)
-    return RegistrationResponse(message="Verification code sent. Check your email.")
+    return TokenResponse(access_token=create_access_token(user))
 
 
 @app.post("/api/v1/auth/login", response_model=TokenResponse)
@@ -124,29 +58,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == data.email))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if user_needs_email_verification(user, db):
-        raise HTTPException(status_code=403, detail="Verify your email address before signing in.")
     return TokenResponse(access_token=create_access_token(user))
-
-
-@app.post("/api/v1/auth/verify-email", response_model=TokenResponse)
-def verify_email(data: EmailVerificationRequest, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == data.email))
-    record = verification_for_user(user.id, db) if user else None
-    submitted_hash = hashlib.sha256(data.code.encode("utf-8")).hexdigest()
-    if not user or not record or record.verified_at or normalize_datetime(record.expires_at) < utc_now() or not hmac.compare_digest(record.code_hash, submitted_hash):
-        raise HTTPException(status_code=400, detail="The verification code is invalid or has expired.")
-    record.verified_at = utc_now()
-    db.commit()
-    return TokenResponse(access_token=create_access_token(user))
-
-
-@app.post("/api/v1/auth/resend-verification")
-def resend_verification(data: ResendVerificationRequest, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == data.email))
-    if user and user_needs_email_verification(user, db):
-        issue_verification_code(user, db)
-    return {"message": "If the account needs verification, a new code has been sent."}
 
 
 @app.get("/api/v1/auth/me", response_model=UserResponse)
