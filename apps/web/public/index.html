@@ -62,6 +62,12 @@
     estimatesButton.textContent = 'Kosztorysy';
     estimatesButton.addEventListener('click', () => location.assign('/estimates.html'));
     document.querySelector('#logout').before(estimatesButton);
+
+    const subscriptionButton = document.createElement('button');
+    subscriptionButton.className = 'nav';
+    subscriptionButton.textContent = 'Abonament';
+    subscriptionButton.addEventListener('click', () => location.assign('/plans.html'));
+    document.querySelector('#logout').before(subscriptionButton);
   </script>
 </body>
 </html>
