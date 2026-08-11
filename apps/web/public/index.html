@@ -152,5 +152,254 @@
       updateClientType();
     })();
   </script>
+  <style>
+    .invoice-layout { display:grid; grid-template-columns:minmax(330px, .9fr) minmax(0, 1.25fr); gap:20px; margin-top:28px; align-items:start; }
+    .invoice-layout .box { margin-top:0; }
+    .invoice-group { border:1px solid var(--line); border-radius:10px; padding:12px; }
+    .invoice-group summary { cursor:pointer; font-weight:750; }
+    .invoice-fields { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }
+    .invoice-fields .wide { grid-column:1 / -1; }
+    .invoice-fields input { width:100%; padding:10px; border:1px solid #d0d5dd; border-radius:8px; }
+    .file-label { color:var(--muted); font-size:13px; font-weight:650; }
+    .file-label input { display:block; width:100%; margin-top:6px; }
+    .form-actions,.invoice-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .secondary,.tiny-action { border:1px solid #d0d5dd !important; background:white !important; color:#344054 !important; }
+    .danger { border:1px solid #fecdca !important; background:#fff5f4 !important; color:#b42318 !important; }
+    .tiny-action { padding:7px 9px !important; font-size:12px; }
+    .invoice-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+    .invoice-row .invoice-actions { flex:none; }
+    .invoice-preview { margin-top:20px !important; background:#fff !important; }
+    .invoice-preview-head { display:flex; justify-content:space-between; gap:20px; border-bottom:2px solid var(--ink); padding-bottom:14px; }
+    .invoice-preview h2 { margin:0; }
+    .party-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin:22px 0; }
+    .party-grid h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 8px; }
+    .party-grid p { margin:3px 0; line-height:1.45; }
+    .invoice-total { border-top:1px solid var(--line); padding-top:14px; text-align:right; font-size:18px; }
+    .attachment-list { padding:0; margin:12px 0 0; list-style:none; }
+    .attachment-list li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); }
+    .profile-form { max-width:780px; }
+    .profile-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .profile-grid .wide { grid-column:1 / -1; }
+    .profile-grid label { display:grid; gap:7px; font-size:14px; font-weight:650; }
+    .profile-grid input { width:100%; padding:10px; border:1px solid #d0d5dd; border-radius:8px; }
+    .success { color:#067647; min-height:20px; font-size:14px; margin:4px 0 0; }
+    @media(max-width:760px){ .invoice-layout,.party-grid,.profile-grid,.invoice-fields { grid-template-columns:1fr; } .invoice-fields .wide,.profile-grid .wide { grid-column:auto; } .invoice-row { display:block; } .invoice-row .invoice-actions { margin-top:10px; } }
+  </style>
+  <script>
+    (() => {
+      const detailFields = [
+        'issuer_name', 'issuer_nip', 'issuer_address', 'issuer_postal_code', 'issuer_city', 'issuer_phone',
+        'recipient_name', 'recipient_nip', 'recipient_address', 'recipient_postal_code', 'recipient_city', 'recipient_phone'
+      ];
+      const labels = { draft: 'Szkic', sent: 'Wysłana', paid: 'Opłacona', overdue: 'Po terminie' };
+      const content = document.querySelector('.content');
+      const logoutButton = document.querySelector('#logout');
+      let invoiceCache = new Map();
+      let profileCache = null;
+
+      const profileButton = document.createElement('button');
+      profileButton.className = 'nav';
+      profileButton.dataset.page = 'profile';
+      profileButton.textContent = 'Moje dane';
+      logoutButton.before(profileButton);
+
+      const profilePage = document.createElement('div');
+      profilePage.id = 'profile-page';
+      profilePage.className = 'page hidden';
+      profilePage.innerHTML = `
+        <h1 class="title">Moje dane</h1>
+        <p class="hint">Uzupełnij dane firmy. Będą podpowiadane jako dane wystawcy przy tworzeniu faktury.</p>
+        <form id="company-profile-form" class="box new-form profile-form">
+          <h2>Dane firmy</h2>
+          <div class="profile-grid">
+            <label class="wide">Pełna nazwa firmy<input name="full_name" required maxlength="255" placeholder="Pełna nazwa firmy" /></label>
+            <label>NIP<input name="nip" inputmode="numeric" maxlength="20" placeholder="np. 1234567890" /></label>
+            <label>REGON<input name="regon" inputmode="numeric" maxlength="20" placeholder="Opcjonalnie" /></label>
+            <label>KRS<input name="krs" inputmode="numeric" maxlength="20" placeholder="Opcjonalnie" /></label>
+            <label>Telefon<input name="phone" type="tel" maxlength="50" placeholder="np. +48 123 456 789" /></label>
+            <label class="wide">Adres firmy<input name="address" maxlength="255" placeholder="Ulica i numer" /></label>
+            <label>Kod pocztowy<input name="postal_code" maxlength="12" placeholder="np. 57-540" /></label>
+            <label>Miejscowość<input name="city" maxlength="100" placeholder="Miejscowość" /></label>
+          </div>
+          <button>Zapisz moje dane</button>
+          <p id="profile-success" class="success"></p><p id="profile-error" class="error"></p>
+        </form>`;
+      content.append(profilePage);
+
+      const invoicesPage = document.querySelector('#invoices-page');
+      invoicesPage.innerHTML = `
+        <h1 class="title">Faktury</h1>
+        <p class="hint">Twórz dokumenty, dodawaj załączniki i kontroluj płatności.</p>
+        <div class="invoice-layout">
+          <form id="invoice-form" class="box new-form">
+            <input type="hidden" name="invoice_id" />
+            <h2 id="invoice-form-title">Nowa faktura</h2>
+            <input name="number" placeholder="Numer faktury, np. FV/01/2026" required maxlength="80" />
+            <input name="amount" type="number" min="0.01" step="0.01" placeholder="Kwota brutto (PLN)" required />
+            <select name="client_id" id="invoice-client-id"><option value="">Nie przypisuj klienta</option></select>
+            <input name="due_date" type="date" />
+            <select name="status"><option value="draft">Szkic</option><option value="sent">Wysłana</option><option value="paid">Opłacona</option></select>
+            <details class="invoice-group" open><summary>Dane wystawcy</summary><div class="invoice-fields">
+              <input class="wide" name="issuer_name" placeholder="Pełna nazwa firmy" /><input name="issuer_nip" placeholder="NIP" />
+              <input name="issuer_phone" placeholder="Telefon" /><input class="wide" name="issuer_address" placeholder="Adres firmy" />
+              <input name="issuer_postal_code" placeholder="Kod pocztowy" /><input name="issuer_city" placeholder="Miejscowość" />
+            </div></details>
+            <details class="invoice-group" open><summary>Dane odbiorcy</summary><div class="invoice-fields">
+              <input class="wide" name="recipient_name" placeholder="Imię i nazwisko lub nazwa firmy" />
+              <input name="recipient_nip" placeholder="NIP (opcjonalnie)" /><input name="recipient_phone" placeholder="Telefon (opcjonalnie)" />
+              <input class="wide" name="recipient_address" placeholder="Adres" /><input name="recipient_postal_code" placeholder="Kod pocztowy" />
+              <input name="recipient_city" placeholder="Miejscowość" />
+            </div></details>
+            <label class="file-label">Załącznik (PDF, zdjęcie lub inny plik, maks. 5 MB)<input name="attachment" type="file" /></label>
+            <div class="form-actions"><button id="invoice-save" type="submit">Dodaj fakturę</button><button id="invoice-cancel" type="button" class="secondary hidden">Anuluj edycję</button></div>
+            <p id="invoice-error" class="error"></p>
+          </form>
+          <div><section class="box"><h2 style="margin-top:0">Faktury</h2><ul id="invoice-list" class="list"></ul></section><section id="invoice-preview" class="box invoice-preview hidden"></section></div>
+        </div>`;
+
+      const invoiceForm = document.querySelector('#invoice-form');
+      const invoiceListElement = document.querySelector('#invoice-list');
+      const invoicePreview = document.querySelector('#invoice-preview');
+      const invoiceError = document.querySelector('#invoice-error');
+      const profileForm = document.querySelector('#company-profile-form');
+
+      function clean(value) { return String(value || '').trim() || null; }
+      function setValue(form, name, value) { const input = form.elements.namedItem(name); if (input) input.value = value || ''; }
+      function partyMarkup(title, prefix, invoice) {
+        const lines = [
+          invoice[prefix + '_name'],
+          invoice[prefix + '_nip'] ? 'NIP: ' + invoice[prefix + '_nip'] : null,
+          invoice[prefix + '_address'],
+          [invoice[prefix + '_postal_code'], invoice[prefix + '_city']].filter(Boolean).join(' '),
+          invoice[prefix + '_phone'] ? 'tel. ' + invoice[prefix + '_phone'] : null
+        ].filter(Boolean);
+        return `<div><h3>${title}</h3>${lines.length ? lines.map(line => `<p>${escape(line)}</p>`).join('') : '<p class="hint">Nie uzupełniono danych.</p>'}</div>`;
+      }
+      function showPage(page, button) {
+        document.querySelectorAll('.nav').forEach(item => item.classList.remove('active'));
+        button.classList.add('active');
+        document.querySelectorAll('.page').forEach(item => item.classList.add('hidden'));
+        document.querySelector('#' + page + '-page').classList.remove('hidden');
+      }
+      async function loadProfile() {
+        const profile = await request('/company-profile');
+        profileCache = profile;
+        Object.keys(profile).forEach(key => setValue(profileForm, key, profile[key]));
+        return profile;
+      }
+      async function fillIssuerFromProfile() {
+        const profile = profileCache || await loadProfile();
+        setValue(invoiceForm, 'issuer_name', profile.full_name);
+        setValue(invoiceForm, 'issuer_nip', profile.nip);
+        setValue(invoiceForm, 'issuer_address', profile.address);
+        setValue(invoiceForm, 'issuer_postal_code', profile.postal_code);
+        setValue(invoiceForm, 'issuer_city', profile.city);
+        setValue(invoiceForm, 'issuer_phone', profile.phone);
+      }
+      async function fillInvoiceClients(selectedId) {
+        const clients = await request('/clients');
+        const select = invoiceForm.elements.namedItem('client_id');
+        select.innerHTML = '<option value="">Nie przypisuj klienta</option>' + clients.map(client => `<option value="${client.id}">${escape(client.name)}</option>`).join('');
+        select.value = selectedId || '';
+      }
+      window.loadInvoices = async function loadInvoicesWithActions() {
+        const items = await request('/invoices');
+        invoiceCache = new Map(items.map(item => [item.id, item]));
+        invoiceListElement.innerHTML = items.length ? items.map(item => `
+          <li class="item invoice-row"><div><strong>${escape(item.number)} · ${money(item.amount)}</strong><small>${labels[item.status] || item.status}${item.due_date ? ' · termin: ' + item.due_date : ''}${item.attachment_count ? ' · pliki: ' + item.attachment_count : ''}</small></div>
+          <div class="invoice-actions"><button class="tiny-action" type="button" data-invoice-action="preview" data-invoice-id="${item.id}">Podgląd</button><button class="tiny-action" type="button" data-invoice-action="edit" data-invoice-id="${item.id}">Edytuj</button><button class="tiny-action danger" type="button" data-invoice-action="delete" data-invoice-id="${item.id}">Usuń</button></div></li>`).join('') : '<li class="item"><small>Nie dodano jeszcze faktur.</small></li>';
+        return items;
+      };
+      async function showInvoicePreview(invoice) {
+        invoicePreview.classList.remove('hidden');
+        invoicePreview.innerHTML = `<div class="invoice-preview-head"><div><p class="eyebrow">Dokument sprzedaży</p><h2>Faktura ${escape(invoice.number)}</h2></div><div><strong>${escape(labels[invoice.status] || invoice.status)}</strong><small>Termin: ${invoice.due_date || 'nie określono'}</small></div></div>
+          <div class="party-grid">${partyMarkup('Wystawca', 'issuer', invoice)}${partyMarkup('Odbiorca', 'recipient', invoice)}</div><div class="invoice-total"><strong>Razem do zapłaty: ${money(invoice.amount)}</strong></div><div id="attachment-section"><h3 style="margin:22px 0 0">Załączniki</h3><p class="hint">Wczytywanie plików…</p></div>`;
+        try {
+          const attachments = await request('/invoices/' + invoice.id + '/attachments');
+          const section = invoicePreview.querySelector('#attachment-section');
+          section.innerHTML = `<h3 style="margin:22px 0 0">Załączniki</h3>${attachments.length ? '<ul class="attachment-list">' + attachments.map(file => `<li><span>${escape(file.file_name)}</span><span class="invoice-actions"><button class="tiny-action" type="button" data-file-action="download" data-invoice-id="${invoice.id}" data-file-id="${file.id}" data-file-name="${escape(file.file_name)}">Pobierz</button><button class="tiny-action danger" type="button" data-file-action="delete" data-invoice-id="${invoice.id}" data-file-id="${file.id}">Usuń</button></span></li>`).join('') + '</ul>' : '<p class="hint">Nie dodano załączników.</p>'}`;
+        } catch (error) { invoicePreview.querySelector('#attachment-section').innerHTML = '<p class="error">Nie udało się pobrać załączników.</p>'; }
+        invoicePreview.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      async function resetInvoiceForm() {
+        invoiceForm.reset();
+        invoiceForm.elements.namedItem('invoice_id').value = '';
+        document.querySelector('#invoice-form-title').textContent = 'Nowa faktura';
+        document.querySelector('#invoice-save').textContent = 'Dodaj fakturę';
+        document.querySelector('#invoice-cancel').classList.add('hidden');
+        invoiceError.textContent = '';
+        await fillInvoiceClients();
+        await fillIssuerFromProfile();
+      }
+      async function editInvoice(invoice) {
+        invoiceForm.reset();
+        Object.keys(invoice).forEach(key => setValue(invoiceForm, key, invoice[key]));
+        await fillInvoiceClients(invoice.client_id);
+        invoiceForm.elements.namedItem('invoice_id').value = invoice.id;
+        document.querySelector('#invoice-form-title').textContent = 'Edytuj fakturę';
+        document.querySelector('#invoice-save').textContent = 'Zapisz zmiany';
+        document.querySelector('#invoice-cancel').classList.remove('hidden');
+        invoiceError.textContent = '';
+        invoiceForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      async function uploadAttachment(invoiceId, file) {
+        if (!file || !file.size) return;
+        if (file.size > 5 * 1024 * 1024) throw Error('Plik jest za duży. Maksymalny rozmiar to 5 MB.');
+        const token = localStorage.getItem('buildsmart_token');
+        const formData = new FormData(); formData.append('file', file);
+        const response = await fetch('/api/v1/invoices/' + invoiceId + '/attachments', { method: 'POST', headers: token ? { Authorization: 'Bearer ' + token } : {}, body: formData });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw Error(data.detail || 'Nie udało się dodać pliku.');
+      }
+      async function downloadAttachment(invoiceId, fileId, fileName) {
+        const token = localStorage.getItem('buildsmart_token');
+        const response = await fetch('/api/v1/invoices/' + invoiceId + '/attachments/' + fileId, { headers: token ? { Authorization: 'Bearer ' + token } : {} });
+        if (!response.ok) { const data = await response.json().catch(() => ({})); throw Error(data.detail || 'Nie udało się pobrać pliku.'); }
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a'); link.href = url; link.download = fileName || 'zalacznik'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      profileButton.addEventListener('click', async () => { try { showPage('profile', profileButton); await loadProfile(); } catch (error) { alert(error.message); } });
+      profileForm.onsubmit = async event => {
+        event.preventDefault(); const form = new FormData(profileForm); const error = document.querySelector('#profile-error'); const success = document.querySelector('#profile-success'); error.textContent = ''; success.textContent = '';
+        try { profileCache = await request('/company-profile', { method: 'PUT', body: JSON.stringify(Object.fromEntries([...form.entries()].map(([key, value]) => [key, clean(value)])))}); success.textContent = 'Dane firmy zostały zapisane.'; }
+        catch (failure) { error.textContent = failure.message; }
+      };
+      invoiceForm.onsubmit = async event => {
+        event.preventDefault(); const form = new FormData(invoiceForm); const invoiceId = clean(form.get('invoice_id')); invoiceError.textContent = '';
+        const payload = { number: clean(form.get('number')), amount: Number(form.get('amount')), client_id: form.get('client_id') ? Number(form.get('client_id')) : null, due_date: clean(form.get('due_date')), status: form.get('status') };
+        detailFields.forEach(field => payload[field] = clean(form.get(field)));
+        try {
+          const invoice = await request(invoiceId ? '/invoices/' + invoiceId : '/invoices', { method: invoiceId ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+          await uploadAttachment(invoice.id, form.get('attachment'));
+          await window.loadInvoices();
+          await resetInvoiceForm();
+          if (form.get('attachment') && form.get('attachment').size) await showInvoicePreview(invoiceCache.get(invoice.id) || invoice);
+        } catch (failure) { invoiceError.textContent = failure.message; }
+      };
+      document.querySelector('#invoice-cancel').onclick = () => resetInvoiceForm().catch(error => invoiceError.textContent = error.message);
+      invoiceListElement.addEventListener('click', async event => {
+        const button = event.target.closest('[data-invoice-action]'); if (!button) return;
+        const invoice = invoiceCache.get(Number(button.dataset.invoiceId)); if (!invoice) return;
+        try {
+          if (button.dataset.invoiceAction === 'preview') await showInvoicePreview(invoice);
+          if (button.dataset.invoiceAction === 'edit') await editInvoice(invoice);
+          if (button.dataset.invoiceAction === 'delete') { if (confirm('Usunąć fakturę ' + invoice.number + ' wraz z załącznikami?')) { await request('/invoices/' + invoice.id, { method: 'DELETE' }); invoicePreview.classList.add('hidden'); await window.loadInvoices(); } }
+        } catch (error) { alert(error.message); }
+      });
+      invoicePreview.addEventListener('click', async event => {
+        const button = event.target.closest('[data-file-action]'); if (!button) return;
+        const invoiceId = Number(button.dataset.invoiceId), fileId = Number(button.dataset.fileId);
+        try {
+          if (button.dataset.fileAction === 'download') await downloadAttachment(invoiceId, fileId, button.dataset.fileName);
+          if (button.dataset.fileAction === 'delete' && confirm('Usunąć ten załącznik?')) { await request('/invoices/' + invoiceId + '/attachments/' + fileId, { method: 'DELETE' }); await window.loadInvoices(); await showInvoicePreview(invoiceCache.get(invoiceId)); }
+        } catch (error) { alert(error.message); }
+      });
+
+      const invoiceNav = document.querySelector('[data-page="invoices"]');
+      invoiceNav.addEventListener('click', () => { Promise.all([fillInvoiceClients(), fillIssuerFromProfile()]).catch(error => invoiceError.textContent = error.message); });
+      resetInvoiceForm().catch(() => {});
+    })();
+  </script>
 </body>
 </html>
