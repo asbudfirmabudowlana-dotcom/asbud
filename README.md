@@ -10,6 +10,10 @@ Production-oriented SaaS starter for construction companies. It contains a Next.
 
 The API documentation is available at `http://localhost:8000/docs`.
 
+## Stripe subscriptions
+
+The Plan page uses Stripe Checkout for Basic and Professional subscriptions. Configure the Stripe price IDs, secret key, webhook secret and public app URL before enabling payments. The safe Railway setup is described in [RAILWAY.md](RAILWAY.md).
+
 ## Deploy on Railway
 
 The repository now includes a root `Dockerfile` and `railway.toml`, so Railway starts the API and Polish web application as one service. Add a Railway PostgreSQL service and set `DATABASE_URL` in the app service to `${{Postgres.DATABASE_URL}}`. Then add `JWT_SECRET` and `OPENAI_API_KEY` as sealed variables. The step-by-step Polish guide is in [RAILWAY.md](RAILWAY.md).
