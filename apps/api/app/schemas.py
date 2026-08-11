@@ -176,6 +176,7 @@ class SubscriptionPlanUpdate(BaseModel):
 
 class CheckoutSessionRequest(BaseModel):
     plan: SubscriptionPlan
+    billing_cycle: Literal["monthly", "yearly"] = "monthly"
 
 
 class CheckoutSessionResponse(BaseModel):
