@@ -57,6 +57,12 @@
     assistantButton.addEventListener('click', () => location.assign('/ai.html'));
     document.querySelector('#logout').before(assistantButton);
 
+    const consultantButton = document.createElement('button');
+    consultantButton.className = 'nav';
+    consultantButton.textContent = 'Konsultant AI';
+    consultantButton.addEventListener('click', () => location.assign('/consultant.html'));
+    document.querySelector('#logout').before(consultantButton);
+
     const estimatesButton = document.createElement('button');
     estimatesButton.className = 'nav';
     estimatesButton.textContent = 'Kosztorysy';
