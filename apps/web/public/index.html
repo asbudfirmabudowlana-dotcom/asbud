@@ -51,6 +51,12 @@
     if(localStorage.getItem('buildsmart_token')) showApp();
   </script>
   <script>
+    const assistantButton = document.createElement('button');
+    assistantButton.className = 'nav';
+    assistantButton.textContent = 'Asystent AI';
+    assistantButton.addEventListener('click', () => location.assign('/ai.html'));
+    document.querySelector('#logout').before(assistantButton);
+
     const estimatesButton = document.createElement('button');
     estimatesButton.className = 'nav';
     estimatesButton.textContent = 'Kosztorysy';
