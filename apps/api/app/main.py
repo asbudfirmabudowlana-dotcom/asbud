@@ -3,16 +3,16 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import stripe
-from fastapi import Depends, FastAPI, HTTPException, Request as FastAPIRequest, status
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request as FastAPIRequest, UploadFile, status
+from fastapi.responses import RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
-from app.models import Client, ClientCompanyDetails, Company, Employee, Estimate, EstimateItem, Invoice, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
-from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
+from app.models import Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
+from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
 from app.security import create_access_token, get_current_user, hash_password, verify_password
 
 settings = get_settings()
@@ -75,6 +75,48 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
         clients=db.scalar(select(func.count()).select_from(Client).where(Client.company_id == cid)) or 0,
         total_budget=float(db.scalar(select(func.coalesce(func.sum(Project.budget), 0)).where(Project.company_id == cid)) or 0),
     )
+
+
+def serialize_company_profile(company: Company, profile: CompanyProfile | None) -> CompanyProfileResponse:
+    return CompanyProfileResponse(
+        company_id=company.id,
+        full_name=profile.full_name if profile and profile.full_name else company.name,
+        nip=profile.nip if profile else None,
+        regon=profile.regon if profile else None,
+        krs=profile.krs if profile else None,
+        address=profile.address if profile else None,
+        postal_code=profile.postal_code if profile else None,
+        city=profile.city if profile else None,
+        phone=profile.phone if profile else None,
+    )
+
+
+@app.get("/api/v1/company-profile", response_model=CompanyProfileResponse)
+def get_company_profile(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    company = db.get(Company, user.company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    profile = db.scalar(select(CompanyProfile).where(CompanyProfile.company_id == user.company_id))
+    return serialize_company_profile(company, profile)
+
+
+@app.put("/api/v1/company-profile", response_model=CompanyProfileResponse)
+def update_company_profile(data: CompanyProfileUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    company = db.get(Company, user.company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    profile = db.scalar(select(CompanyProfile).where(CompanyProfile.company_id == user.company_id))
+    if not profile:
+        profile = CompanyProfile(company_id=user.company_id)
+        db.add(profile)
+    values = data.model_dump(exclude_unset=True)
+    for field, value in values.items():
+        setattr(profile, field, value.strip() if isinstance(value, str) else value)
+    if profile.full_name:
+        company.name = profile.full_name
+    db.commit()
+    db.refresh(profile)
+    return serialize_company_profile(company, profile)
 
 
 def normalize_nip(value: str) -> str:
@@ -173,20 +215,163 @@ def create_task(data: TaskCreate, user: User = Depends(get_current_user), db: Se
     return task
 
 
+INVOICE_DETAIL_FIELDS = {
+    "issuer_name", "issuer_nip", "issuer_address", "issuer_postal_code", "issuer_city", "issuer_phone",
+    "recipient_name", "recipient_nip", "recipient_address", "recipient_postal_code", "recipient_city", "recipient_phone",
+}
+INVOICE_FIELDS = {"number", "client_id", "project_id", "amount", "status", "due_date"}
+MAX_INVOICE_ATTACHMENT_BYTES = 5 * 1024 * 1024
+
+
+def validate_invoice_links(client_id: int | None, project_id: int | None, user: User, db: Session) -> None:
+    if client_id is not None and not db.scalar(select(Client).where(Client.id == client_id, Client.company_id == user.company_id)):
+        raise HTTPException(status_code=404, detail="Client not found")
+    if project_id is not None and not db.scalar(select(Project).where(Project.id == project_id, Project.company_id == user.company_id)):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+def get_company_invoice(invoice_id: int, user: User, db: Session) -> Invoice:
+    invoice = db.scalar(select(Invoice).where(Invoice.id == invoice_id, Invoice.company_id == user.company_id))
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return invoice
+
+
+def serialize_invoice(invoice: Invoice, db: Session) -> InvoiceResponse:
+    details = db.scalar(select(InvoiceDetails).where(InvoiceDetails.invoice_id == invoice.id))
+    values = {
+        "id": invoice.id,
+        "number": invoice.number,
+        "client_id": invoice.client_id,
+        "project_id": invoice.project_id,
+        "amount": float(invoice.amount),
+        "status": invoice.status,
+        "due_date": invoice.due_date,
+        "created_at": invoice.created_at,
+        "attachment_count": db.scalar(
+            select(func.count()).select_from(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id)
+        ) or 0,
+    }
+    for field in INVOICE_DETAIL_FIELDS:
+        values[field] = getattr(details, field) if details else None
+    return InvoiceResponse(**values)
+
+
 @app.get("/api/v1/invoices", response_model=list[InvoiceResponse])
 def list_invoices(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.scalars(select(Invoice).where(Invoice.company_id == user.company_id).order_by(Invoice.created_at.desc())).all()
+    invoices = db.scalars(select(Invoice).where(Invoice.company_id == user.company_id).order_by(Invoice.created_at.desc())).all()
+    return [serialize_invoice(invoice, db) for invoice in invoices]
 
 
 @app.post("/api/v1/invoices", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
 def create_invoice(data: InvoiceCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if data.client_id and not db.scalar(select(Client).where(Client.id == data.client_id, Client.company_id == user.company_id)):
-        raise HTTPException(status_code=404, detail="Client not found")
-    if data.project_id and not db.scalar(select(Project).where(Project.id == data.project_id, Project.company_id == user.company_id)):
-        raise HTTPException(status_code=404, detail="Project not found")
-    invoice = Invoice(company_id=user.company_id, **data.model_dump())
-    db.add(invoice); db.commit(); db.refresh(invoice)
-    return invoice
+    validate_invoice_links(data.client_id, data.project_id, user, db)
+    invoice = Invoice(company_id=user.company_id, **data.model_dump(exclude=INVOICE_DETAIL_FIELDS))
+    db.add(invoice)
+    db.flush()
+    details_values = data.model_dump(include=INVOICE_DETAIL_FIELDS)
+    if any(value is not None and str(value).strip() for value in details_values.values()):
+        db.add(InvoiceDetails(invoice_id=invoice.id, **details_values))
+    db.commit()
+    db.refresh(invoice)
+    return serialize_invoice(invoice, db)
+
+
+@app.patch("/api/v1/invoices/{invoice_id}", response_model=InvoiceResponse)
+def update_invoice(invoice_id: int, data: InvoiceUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    invoice = get_company_invoice(invoice_id, user, db)
+    values = data.model_dump(exclude_unset=True)
+    client_id = values.get("client_id", invoice.client_id)
+    project_id = values.get("project_id", invoice.project_id)
+    validate_invoice_links(client_id, project_id, user, db)
+    for field in INVOICE_FIELDS.intersection(values):
+        setattr(invoice, field, values[field])
+    detail_values = {field: values[field] for field in INVOICE_DETAIL_FIELDS.intersection(values)}
+    if detail_values:
+        details = db.scalar(select(InvoiceDetails).where(InvoiceDetails.invoice_id == invoice.id))
+        if not details:
+            details = InvoiceDetails(invoice_id=invoice.id)
+            db.add(details)
+        for field, value in detail_values.items():
+            setattr(details, field, value.strip() if isinstance(value, str) else value)
+    db.commit()
+    db.refresh(invoice)
+    return serialize_invoice(invoice, db)
+
+
+@app.delete("/api/v1/invoices/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_invoice(invoice_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    invoice = get_company_invoice(invoice_id, user, db)
+    attachments = db.scalars(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id)).all()
+    for attachment in attachments:
+        db.delete(attachment)
+    details = db.scalar(select(InvoiceDetails).where(InvoiceDetails.invoice_id == invoice.id))
+    if details:
+        db.delete(details)
+    db.delete(invoice)
+    db.commit()
+
+
+@app.get("/api/v1/invoices/{invoice_id}/attachments", response_model=list[InvoiceAttachmentResponse])
+def list_invoice_attachments(invoice_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    invoice = get_company_invoice(invoice_id, user, db)
+    return db.scalars(
+        select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id).order_by(InvoiceAttachment.created_at.desc())
+    ).all()
+
+
+@app.post("/api/v1/invoices/{invoice_id}/attachments", response_model=InvoiceAttachmentResponse, status_code=status.HTTP_201_CREATED)
+async def upload_invoice_attachment(
+    invoice_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    invoice = get_company_invoice(invoice_id, user, db)
+    content = await file.read(MAX_INVOICE_ATTACHMENT_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="Select a file to upload")
+    if len(content) > MAX_INVOICE_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
+    file_name = Path(file.filename or "attachment").name[:255]
+    attachment = InvoiceAttachment(
+        invoice_id=invoice.id,
+        file_name=file_name,
+        content_type=(file.content_type or "application/octet-stream")[:120],
+        content=content,
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
+
+
+@app.get("/api/v1/invoices/{invoice_id}/attachments/{attachment_id}")
+def download_invoice_attachment(invoice_id: int, attachment_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    invoice = get_company_invoice(invoice_id, user, db)
+    attachment = db.scalar(
+        select(InvoiceAttachment).where(InvoiceAttachment.id == attachment_id, InvoiceAttachment.invoice_id == invoice.id)
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    safe_name = attachment.file_name.replace('"', "'").replace("\r", "").replace("\n", "")
+    return Response(
+        content=attachment.content,
+        media_type=attachment.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+@app.delete("/api/v1/invoices/{invoice_id}/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_invoice_attachment(invoice_id: int, attachment_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    invoice = get_company_invoice(invoice_id, user, db)
+    attachment = db.scalar(
+        select(InvoiceAttachment).where(InvoiceAttachment.id == attachment_id, InvoiceAttachment.invoice_id == invoice.id)
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    db.delete(attachment)
+    db.commit()
 
 
 def serialize_estimate(estimate: Estimate, items: list[EstimateItem]) -> EstimateResponse:
