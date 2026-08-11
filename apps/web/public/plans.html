@@ -17,8 +17,8 @@
     <p class="hint">Obecny plan: <span id="current" class="current">Wczytywanie…</span></p>
     <section class="plans">
       <article class="plan"><h2>Free</h2><div class="price">0 zł <small>/ mies.</small></div><ul class="features"><li>✓ 1 użytkownik</li><li>✓ 3 aktywne projekty</li><li>✓ Klienci i zadania</li></ul><button class="choose" data-plan="free">Wybierz Free</button></article>
-      <article class="plan featured"><span class="tag">Najczęściej wybierany</span><h2>Basic</h2><div class="price">99 zł <small>/ mies.</small></div><ul class="features"><li>✓ 5 użytkowników</li><li>✓ Nielimitowane projekty</li><li>✓ Faktury i zespół</li><li>✓ Wsparcie e-mail</li></ul><button class="choose" data-plan="basic">Wybierz Basic</button></article>
-      <article class="plan"><h2>Professional</h2><div class="price">249 zł <small>/ mies.</small></div><ul class="features"><li>✓ 20 użytkowników</li><li>✓ Raporty i automatyzacje</li><li>✓ Priorytetowe wsparcie</li><li>✓ Integracje</li></ul><button class="choose" data-plan="professional">Wybierz Professional</button></article>
+      <article class="plan featured"><span class="tag">Najczęściej wybierany</span><h2>Basic</h2><div class="price">99 zł <small>/ mies.</small></div><ul class="features"><li>✓ 5 użytkowników</li><li>✓ Nielimitowane projekty</li><li>✓ Faktury i zespół</li><li>✓ Wsparcie e-mail</li></ul><button class="choose" data-plan="basic">Przejdź do płatności</button></article>
+      <article class="plan"><h2>Professional</h2><div class="price">249 zł <small>/ mies.</small></div><ul class="features"><li>✓ 20 użytkowników</li><li>✓ Raporty i automatyzacje</li><li>✓ Priorytetowe wsparcie</li><li>✓ Integracje</li></ul><button class="choose" data-plan="professional">Przejdź do płatności</button></article>
     </section>
     <p id="message"></p>
   </main>
@@ -28,8 +28,11 @@
     if (!token) location.assign('/');
     const labels = { free:'Free', basic:'Basic', professional:'Professional', enterprise:'Enterprise' };
     async function request(path, options = {}) { const response = await fetch(api + path, { ...options, headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token, ...(options.headers || {}) } }); const data = await response.json().catch(() => ({})); if (!response.ok) throw Error(data.detail || 'Nie udało się połączyć z serwerem.'); return data; }
-    async function load() { const subscription = await request('/billing/subscription'); const suffix = subscription.status === 'trial' ? ' — okres próbny do ' + new Date(subscription.trial_ends_at).toLocaleDateString('pl-PL') : ''; document.querySelector('#current').textContent = labels[subscription.plan] + suffix; }
-    document.querySelectorAll('.choose').forEach(button => button.onclick = async () => { const message = document.querySelector('#message'); message.textContent = ''; try { const subscription = await request('/billing/plan', { method:'POST', body:JSON.stringify({ plan:button.dataset.plan }) }); await load(); message.textContent = subscription.plan === 'free' ? 'Wybrano plan Free.' : 'Plan wybrany. Rozpoczął się bezpłatny 14-dniowy okres próbny. Płatności podłączymy w kolejnym kroku.'; } catch (error) { message.textContent = error.message; } });
+    async function load() { const subscription = await request('/billing/subscription'); document.querySelector('#current').textContent = labels[subscription.plan]; }
+    document.querySelectorAll('.choose').forEach(button => button.onclick = async () => { const message = document.querySelector('#message'); const plan = button.dataset.plan; message.textContent = ''; try { if (plan === 'free') { await request('/billing/plan', { method:'POST', body:JSON.stringify({ plan }) }); await load(); message.textContent = 'Wybrano plan Free.'; return; } button.disabled = true; button.textContent = 'Otwieranie płatności…'; const checkout = await request('/billing/checkout', { method:'POST', body:JSON.stringify({ plan }) }); location.assign(checkout.checkout_url); } catch (error) { button.disabled = false; button.textContent = 'Przejdź do płatności'; message.textContent = error.message; } });
+    const checkoutState = new URLSearchParams(location.search).get('checkout');
+    if (checkoutState === 'success') document.querySelector('#message').textContent = 'Dziękujemy. Płatność została potwierdzona, a plan zostanie aktywowany za chwilę.';
+    if (checkoutState === 'cancelled') document.querySelector('#message').textContent = 'Płatność została anulowana. Możesz wybrać plan ponownie.';
     load().catch(error => document.querySelector('#message').textContent = error.message);
   </script>
 </body>
