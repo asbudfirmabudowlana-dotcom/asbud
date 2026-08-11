@@ -21,20 +21,6 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
-class RegistrationResponse(BaseModel):
-    verification_required: bool = True
-    message: str
-
-
-class EmailVerificationRequest(BaseModel):
-    email: EmailStr
-    code: str = Field(pattern=r"^\d{6}$")
-
-
-class ResendVerificationRequest(BaseModel):
-    email: EmailStr
-
-
 class UserResponse(BaseModel):
     id: int
     company_id: int
