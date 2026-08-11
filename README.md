@@ -14,9 +14,7 @@ The API documentation is available at `http://localhost:8000/docs`.
 
 The Plan page uses Stripe Checkout for Basic and Professional subscriptions. Configure the Stripe price IDs, secret key, webhook secret and public app URL before enabling payments. The safe Railway setup is described in [RAILWAY.md](RAILWAY.md).
 
-## Email verification and company data
-
-New workspaces confirm their email address with a one-time, six-digit code. Configure an SMTP provider in the API environment with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` and `SMTP_FROM` to deliver the code. Existing users can still sign in after an upgrade; verification is required for newly created accounts.
+## Company data
 
 When adding a client, users can select an individual or a company. For a company, the name, NIP and contact data are entered manually.
 
