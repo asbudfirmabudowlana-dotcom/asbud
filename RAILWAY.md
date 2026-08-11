@@ -40,21 +40,6 @@
 4. Skopiuj sekret webhooka do zmiennej `STRIPE_WEBHOOK_SECRET` w Railway i oznacz go jako **Seal**.
 5. Na początek użyj trybu testowego Stripe. Dopiero po pomyślnym teście zamień wszystkie klucze, ceny i webhook na dane z trybu produkcyjnego.
 
-## Weryfikacja adresu e-mail
-
-Po rejestracji aplikacja wysyła jednorazowy, sześciocyfrowy kod. W usłudze aplikacji w Railway dodaj dane swojego dostawcy poczty:
-
-```text
-SMTP_HOST=smtp.twoj-dostawca.pl
-SMTP_PORT=587
-SMTP_USERNAME=login-smtp
-SMTP_PASSWORD=haslo-lub-klucz-smtp
-SMTP_FROM=BuildSmart AI <noreply@twoja-domena.pl>
-SMTP_USE_TLS=true
-```
-
-`SMTP_PASSWORD` oznacz jako **Seal**. Po zapisaniu zmiennych Railway uruchomi aplikację ponownie. Nie wpisuj hasła SMTP do GitHuba ani na czacie.
-
 ## Firmy i NIP
 
 W formularzu klienta wybierz **Firma**, a następnie wpisz ręcznie nazwę, NIP oraz dane kontaktowe. Aplikacja nie łączy się obecnie z bazą GUS.
