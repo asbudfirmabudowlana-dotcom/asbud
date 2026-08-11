@@ -113,6 +113,14 @@ class SubscriptionPlanUpdate(BaseModel):
     plan: SubscriptionPlan
 
 
+class CheckoutSessionRequest(BaseModel):
+    plan: SubscriptionPlan
+
+
+class CheckoutSessionResponse(BaseModel):
+    checkout_url: str
+
+
 class SubscriptionResponse(BaseModel):
     plan: SubscriptionPlan
     status: str
