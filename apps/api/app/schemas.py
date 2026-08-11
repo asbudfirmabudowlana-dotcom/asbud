@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from app.models import EstimateStatus, InvoiceStatus, ProjectStatus, SubscriptionPlan, TaskPriority, TaskStatus
 
@@ -140,6 +141,19 @@ class AiProjectPlanResponse(BaseModel):
     phases: list[str]
     tasks: list[str]
     risks: list[str]
+
+
+class AiConsultantMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class AiConsultantRequest(BaseModel):
+    messages: list[AiConsultantMessage] = Field(min_length=1, max_length=12)
+
+
+class AiConsultantResponse(BaseModel):
+    answer: str
 
 
 class EstimateItemCreate(BaseModel):
