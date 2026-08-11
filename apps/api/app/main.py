@@ -11,8 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
-from app.models import Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
-from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
+from app.models import Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateAttachment, EstimateDetails, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
+from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateAttachmentResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, EstimateUpdate, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
 from app.security import create_access_token, get_current_user, hash_password, verify_password
 
 settings = get_settings()
@@ -374,22 +374,44 @@ def delete_invoice_attachment(invoice_id: int, attachment_id: int, user: User = 
     db.commit()
 
 
-def serialize_estimate(estimate: Estimate, items: list[EstimateItem]) -> EstimateResponse:
+ESTIMATE_DETAIL_FIELDS = {
+    "issuer_name", "issuer_nip", "issuer_address", "issuer_postal_code", "issuer_city", "issuer_phone",
+    "recipient_name", "recipient_nip", "recipient_address", "recipient_postal_code", "recipient_city", "recipient_phone",
+}
+ESTIMATE_FIELDS = {"number", "client_id", "project_id", "status", "tax_rate", "notes"}
+
+
+def get_company_estimate(estimate_id: int, user: User, db: Session) -> Estimate:
+    estimate = db.scalar(select(Estimate).where(Estimate.id == estimate_id, Estimate.company_id == user.company_id))
+    if not estimate:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+    return estimate
+
+
+def validate_estimate_links(client_id: int | None, project_id: int | None, user: User, db: Session) -> None:
+    if client_id is not None and not db.scalar(select(Client).where(Client.id == client_id, Client.company_id == user.company_id)):
+        raise HTTPException(status_code=404, detail="Client not found")
+    if project_id is not None and not db.scalar(select(Project).where(Project.id == project_id, Project.company_id == user.company_id)):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+def serialize_estimate(estimate: Estimate, items: list[EstimateItem], db: Session) -> EstimateResponse:
     net_total = sum(float(item.quantity) * float(item.unit_price) for item in items)
     tax_total = net_total * float(estimate.tax_rate) / 100
-    return EstimateResponse(
-        id=estimate.id,
-        number=estimate.number,
-        client_id=estimate.client_id,
-        project_id=estimate.project_id,
-        status=estimate.status,
-        tax_rate=float(estimate.tax_rate),
-        notes=estimate.notes,
-        created_at=estimate.created_at,
-        net_total=round(net_total, 2),
-        tax_total=round(tax_total, 2),
-        gross_total=round(net_total + tax_total, 2),
-        items=[
+    details = db.scalar(select(EstimateDetails).where(EstimateDetails.estimate_id == estimate.id))
+    values = {
+        "id": estimate.id,
+        "number": estimate.number,
+        "client_id": estimate.client_id,
+        "project_id": estimate.project_id,
+        "status": estimate.status,
+        "tax_rate": float(estimate.tax_rate),
+        "notes": estimate.notes,
+        "created_at": estimate.created_at,
+        "net_total": round(net_total, 2),
+        "tax_total": round(tax_total, 2),
+        "gross_total": round(net_total + tax_total, 2),
+        "items": [
             EstimateItemResponse(
                 id=item.id,
                 description=item.description,
@@ -400,14 +422,20 @@ def serialize_estimate(estimate: Estimate, items: list[EstimateItem]) -> Estimat
             )
             for item in items
         ],
-    )
+        "attachment_count": db.scalar(
+            select(func.count()).select_from(EstimateAttachment).where(EstimateAttachment.estimate_id == estimate.id)
+        ) or 0,
+    }
+    for field in ESTIMATE_DETAIL_FIELDS:
+        values[field] = getattr(details, field) if details else None
+    return EstimateResponse(**values)
 
 
 @app.get("/api/v1/estimates", response_model=list[EstimateResponse])
 def list_estimates(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     estimates = db.scalars(select(Estimate).where(Estimate.company_id == user.company_id).order_by(Estimate.created_at.desc())).all()
     return [
-        serialize_estimate(estimate, db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all())
+        serialize_estimate(estimate, db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all(), db)
         for estimate in estimates
     ]
 
@@ -416,29 +444,127 @@ def list_estimates(user: User = Depends(get_current_user), db: Session = Depends
 def create_estimate(data: EstimateCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.scalar(select(Estimate).where(Estimate.company_id == user.company_id, Estimate.number == data.number)):
         raise HTTPException(status_code=409, detail="Estimate number already exists")
-    if data.client_id and not db.scalar(select(Client).where(Client.id == data.client_id, Client.company_id == user.company_id)):
-        raise HTTPException(status_code=404, detail="Client not found")
-    if data.project_id and not db.scalar(select(Project).where(Project.id == data.project_id, Project.company_id == user.company_id)):
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    estimate = Estimate(
-        company_id=user.company_id,
-        client_id=data.client_id,
-        project_id=data.project_id,
-        number=data.number,
-        status=data.status,
-        tax_rate=data.tax_rate,
-        notes=data.notes,
-    )
+    validate_estimate_links(data.client_id, data.project_id, user, db)
+    estimate = Estimate(company_id=user.company_id, **data.model_dump(exclude={"items", *ESTIMATE_DETAIL_FIELDS}))
     db.add(estimate)
     db.flush()
     items = [EstimateItem(estimate_id=estimate.id, **item.model_dump()) for item in data.items]
     db.add_all(items)
+    details_values = data.model_dump(include=ESTIMATE_DETAIL_FIELDS)
+    if any(value is not None and str(value).strip() for value in details_values.values()):
+        db.add(EstimateDetails(estimate_id=estimate.id, **details_values))
     db.commit()
     db.refresh(estimate)
     for item in items:
         db.refresh(item)
-    return serialize_estimate(estimate, items)
+    return serialize_estimate(estimate, items, db)
+
+
+@app.patch("/api/v1/estimates/{estimate_id}", response_model=EstimateResponse)
+def update_estimate(estimate_id: int, data: EstimateUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    estimate = get_company_estimate(estimate_id, user, db)
+    values = data.model_dump(exclude_unset=True)
+    client_id = values.get("client_id", estimate.client_id)
+    project_id = values.get("project_id", estimate.project_id)
+    validate_estimate_links(client_id, project_id, user, db)
+    if "number" in values and values["number"] != estimate.number:
+        if db.scalar(select(Estimate).where(Estimate.company_id == user.company_id, Estimate.number == values["number"])):
+            raise HTTPException(status_code=409, detail="Estimate number already exists")
+    for field in ESTIMATE_FIELDS.intersection(values):
+        setattr(estimate, field, values[field])
+    if "items" in values:
+        previous_items = db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all()
+        for item in previous_items:
+            db.delete(item)
+        db.flush()
+        db.add_all([EstimateItem(estimate_id=estimate.id, **item) for item in values["items"]])
+    detail_values = {field: values[field] for field in ESTIMATE_DETAIL_FIELDS.intersection(values)}
+    if detail_values:
+        details = db.scalar(select(EstimateDetails).where(EstimateDetails.estimate_id == estimate.id))
+        if not details:
+            details = EstimateDetails(estimate_id=estimate.id)
+            db.add(details)
+        for field, value in detail_values.items():
+            setattr(details, field, value.strip() if isinstance(value, str) else value)
+    db.commit()
+    db.refresh(estimate)
+    items = db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all()
+    return serialize_estimate(estimate, items, db)
+
+
+@app.delete("/api/v1/estimates/{estimate_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_estimate(estimate_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    estimate = get_company_estimate(estimate_id, user, db)
+    for attachment in db.scalars(select(EstimateAttachment).where(EstimateAttachment.estimate_id == estimate.id)).all():
+        db.delete(attachment)
+    details = db.scalar(select(EstimateDetails).where(EstimateDetails.estimate_id == estimate.id))
+    if details:
+        db.delete(details)
+    for item in db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all():
+        db.delete(item)
+    db.delete(estimate)
+    db.commit()
+
+
+@app.get("/api/v1/estimates/{estimate_id}/attachments", response_model=list[EstimateAttachmentResponse])
+def list_estimate_attachments(estimate_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    estimate = get_company_estimate(estimate_id, user, db)
+    return db.scalars(
+        select(EstimateAttachment).where(EstimateAttachment.estimate_id == estimate.id).order_by(EstimateAttachment.created_at.desc())
+    ).all()
+
+
+@app.post("/api/v1/estimates/{estimate_id}/attachments", response_model=EstimateAttachmentResponse, status_code=status.HTTP_201_CREATED)
+async def upload_estimate_attachment(
+    estimate_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    estimate = get_company_estimate(estimate_id, user, db)
+    content = await file.read(MAX_INVOICE_ATTACHMENT_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="Select a file to upload")
+    if len(content) > MAX_INVOICE_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
+    attachment = EstimateAttachment(
+        estimate_id=estimate.id,
+        file_name=Path(file.filename or "attachment").name[:255],
+        content_type=(file.content_type or "application/octet-stream")[:120],
+        content=content,
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
+
+
+@app.get("/api/v1/estimates/{estimate_id}/attachments/{attachment_id}")
+def download_estimate_attachment(estimate_id: int, attachment_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    estimate = get_company_estimate(estimate_id, user, db)
+    attachment = db.scalar(
+        select(EstimateAttachment).where(EstimateAttachment.id == attachment_id, EstimateAttachment.estimate_id == estimate.id)
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    safe_name = attachment.file_name.replace('"', "'").replace("\r", "").replace("\n", "")
+    return Response(
+        content=attachment.content,
+        media_type=attachment.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+@app.delete("/api/v1/estimates/{estimate_id}/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_estimate_attachment(estimate_id: int, attachment_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    estimate = get_company_estimate(estimate_id, user, db)
+    attachment = db.scalar(
+        select(EstimateAttachment).where(EstimateAttachment.id == attachment_id, EstimateAttachment.estimate_id == estimate.id)
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    db.delete(attachment)
+    db.commit()
 
 
 def get_or_create_subscription(user: User, db: Session) -> Subscription:
