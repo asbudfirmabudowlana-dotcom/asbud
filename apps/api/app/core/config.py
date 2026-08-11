@@ -10,6 +10,14 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-terra"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_use_tls: bool = True
+    gus_regon_api_key: str | None = None
+    gus_regon_endpoint: str = "https://wyszukiwarkaregon.stat.gov.pl/wsBIR/UslugaBIRzewnPubl.svc"
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
     stripe_price_basic: str | None = None
