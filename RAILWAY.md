@@ -39,3 +39,28 @@
 3. W Stripe utwórz webhook dla adresu `https://asbud-production.up.railway.app/api/v1/billing/webhook` i wybierz zdarzenia `checkout.session.completed`, `customer.subscription.updated` oraz `customer.subscription.deleted`.
 4. Skopiuj sekret webhooka do zmiennej `STRIPE_WEBHOOK_SECRET` w Railway i oznacz go jako **Seal**.
 5. Na początek użyj trybu testowego Stripe. Dopiero po pomyślnym teście zamień wszystkie klucze, ceny i webhook na dane z trybu produkcyjnego.
+
+## Weryfikacja adresu e-mail
+
+Po rejestracji aplikacja wysyła jednorazowy, sześciocyfrowy kod. W usłudze aplikacji w Railway dodaj dane swojego dostawcy poczty:
+
+```text
+SMTP_HOST=smtp.twoj-dostawca.pl
+SMTP_PORT=587
+SMTP_USERNAME=login-smtp
+SMTP_PASSWORD=haslo-lub-klucz-smtp
+SMTP_FROM=BuildSmart AI <noreply@twoja-domena.pl>
+SMTP_USE_TLS=true
+```
+
+`SMTP_PASSWORD` oznacz jako **Seal**. Po zapisaniu zmiennych Railway uruchomi aplikację ponownie. Nie wpisuj hasła SMTP do GitHuba ani na czacie.
+
+## Firmy z bazy GUS po NIP
+
+W formularzu klienta wybierz **Firma**, wpisz NIP i kliknij **Sprawdź NIP w GUS**. Aby wyszukiwanie działało, dodaj w Railway:
+
+```text
+GUS_REGON_API_KEY=klucz-otrzymany-od-GUS
+```
+
+Klucz do komercyjnego API REGON uzyskuje się w GUS; aktualna instrukcja jest na [oficjalnym portalu API REGON](https://api.stat.gov.pl/home/regonapi). Oznacz tę zmienną jako **Seal**. Aplikacja wysyła NIP do GUS wyłącznie z serwera, nigdy z przeglądarki klienta.
