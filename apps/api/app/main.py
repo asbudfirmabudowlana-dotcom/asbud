@@ -583,11 +583,13 @@ def current_subscription(user: User = Depends(get_current_user), db: Session = D
     return get_or_create_subscription(user, db)
 
 
-def stripe_price_for_plan(plan: SubscriptionPlan) -> str | None:
+def stripe_price_for_plan(plan: SubscriptionPlan, billing_cycle: str) -> str | None:
     return {
-        SubscriptionPlan.basic: settings.stripe_price_basic,
-        SubscriptionPlan.professional: settings.stripe_price_professional,
-    }.get(plan)
+        (SubscriptionPlan.basic, "monthly"): settings.stripe_price_basic_monthly or settings.stripe_price_basic,
+        (SubscriptionPlan.basic, "yearly"): settings.stripe_price_basic_yearly,
+        (SubscriptionPlan.professional, "monthly"): settings.stripe_price_professional_monthly or settings.stripe_price_professional,
+        (SubscriptionPlan.professional, "yearly"): settings.stripe_price_professional_yearly,
+    }.get((plan, billing_cycle))
 
 
 def update_subscription_from_stripe(company_id: int, plan: SubscriptionPlan, subscription_status: str, db: Session) -> None:
@@ -633,13 +635,13 @@ def create_checkout_session(data: CheckoutSessionRequest, user: User = Depends(g
         raise HTTPException(status_code=400, detail="This plan does not require Stripe checkout.")
 
     api_key = settings.stripe_secret_key.strip() if settings.stripe_secret_key else ""
-    price_id = stripe_price_for_plan(data.plan)
+    price_id = stripe_price_for_plan(data.plan, data.billing_cycle)
     if not api_key or not price_id:
         raise HTTPException(status_code=503, detail="Payments are not configured yet. Please contact BuildSmart support.")
 
     stripe.api_key = api_key
     base_url = settings.app_base_url.rstrip("/")
-    metadata = {"company_id": str(user.company_id), "plan": data.plan.value}
+    metadata = {"company_id": str(user.company_id), "plan": data.plan.value, "billing_cycle": data.billing_cycle}
     try:
         checkout = stripe.checkout.Session.create(
             mode="subscription",
