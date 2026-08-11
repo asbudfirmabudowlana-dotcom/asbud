@@ -164,31 +164,19 @@
       type.innerHTML = '<option value="individual">Osoba fizyczna</option><option value="company">Firma</option>';
       const companyFields = document.createElement('div');
       companyFields.className = 'hidden';
-      companyFields.innerHTML = '<input name="nip" inputmode="numeric" maxlength="13" placeholder="NIP firmy" /><button id="gus-lookup" type="button">Sprawdź NIP w GUS</button><small id="gus-status" class="hint"></small>';
+      companyFields.innerHTML = '<input name="nip" inputmode="numeric" maxlength="13" placeholder="NIP firmy" /><small class="hint">Wpisz dane firmy ręcznie.</small>';
       clientName.before(type);
       clientName.after(companyFields);
       const nipInput = companyFields.querySelector('[name="nip"]');
-      const gusStatus = companyFields.querySelector('#gus-status');
-      const gusLookup = companyFields.querySelector('#gus-lookup');
 
       function updateClientType() {
         const company = type.value === 'company';
         companyFields.classList.toggle('hidden', !company);
-        clientName.readOnly = company;
-        clientName.placeholder = company ? 'Nazwa zostanie pobrana z GUS' : 'Imię i nazwisko';
-        if (!company) { nipInput.value = ''; gusStatus.textContent = ''; }
+        clientName.readOnly = false;
+        clientName.placeholder = company ? 'Nazwa firmy' : 'Imię i nazwisko';
+        if (!company) nipInput.value = '';
       }
       type.addEventListener('change', updateClientType);
-      gusLookup.onclick = async () => {
-        gusStatus.style.color = '#175cd3'; gusStatus.textContent = 'Sprawdzam w GUS…';
-        try {
-          const company = await request('/clients/gus-lookup', { method: 'POST', body: JSON.stringify({ nip: nipInput.value }) });
-          clientName.value = company.name;
-          if (company.address) clientAddress.value = company.address;
-          gusStatus.style.color = '#067647';
-          gusStatus.textContent = `Zweryfikowano: ${company.name}${company.regon ? ' · REGON ' + company.regon : ''}`;
-        } catch (failure) { gusStatus.style.color = '#b42318'; gusStatus.textContent = failure.message; }
-      };
       loadClients = async () => {
         const items = await request('/clients');
         clientList.innerHTML = items.length ? items.map(client => {
@@ -202,7 +190,7 @@
         clientError.textContent = '';
         try {
           await request('/clients', { method: 'POST', body: JSON.stringify({ name: form.get('name'), entity_type: form.get('entity_type'), nip: form.get('entity_type') === 'company' ? form.get('nip') : null, email: form.get('email') || null, phone: form.get('phone') || null, address: form.get('address') || null }) });
-          clientForm.reset(); updateClientType(); gusStatus.textContent = '';
+          clientForm.reset(); updateClientType();
           await Promise.all([loadClients(), loadDashboard()]);
         } catch (failure) { clientError.textContent = failure.message; }
       };
