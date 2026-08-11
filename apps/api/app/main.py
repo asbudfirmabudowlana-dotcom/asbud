@@ -3,7 +3,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from datetime import datetime, timedelta, timezone
-from fastapi import Depends, FastAPI, HTTPException, status
+import stripe
+from fastapi import Depends, FastAPI, HTTPException, Request as FastAPIRequest, status
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
 from app.models import Client, Company, Employee, Estimate, EstimateItem, Invoice, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
-from app.schemas import (AiProjectPlanRequest, AiProjectPlanResponse, ClientCreate, ClientResponse, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
+from app.schemas import (AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, InvoiceCreate, InvoiceResponse, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
 from app.security import create_access_token, get_current_user, hash_password, verify_password
 
 settings = get_settings()
@@ -230,19 +231,110 @@ def current_subscription(user: User = Depends(get_current_user), db: Session = D
     return get_or_create_subscription(user, db)
 
 
+def stripe_price_for_plan(plan: SubscriptionPlan) -> str | None:
+    return {
+        SubscriptionPlan.basic: settings.stripe_price_basic,
+        SubscriptionPlan.professional: settings.stripe_price_professional,
+    }.get(plan)
+
+
+def update_subscription_from_stripe(company_id: int, plan: SubscriptionPlan, subscription_status: str, db: Session) -> None:
+    subscription = db.scalar(select(Subscription).where(Subscription.company_id == company_id))
+    if not subscription:
+        subscription = Subscription(company_id=company_id, plan=SubscriptionPlan.free, status="active")
+        db.add(subscription)
+        db.flush()
+    subscription.plan = plan
+    subscription.status = subscription_status
+    subscription.trial_ends_at = None
+    db.commit()
+
+
+def stripe_metadata(payload: object) -> tuple[int, SubscriptionPlan] | None:
+    if not hasattr(payload, "get"):
+        return None
+    metadata = payload.get("metadata") or {}
+    try:
+        company_id = int(metadata.get("company_id"))
+        plan = SubscriptionPlan(metadata.get("plan"))
+    except (TypeError, ValueError):
+        return None
+    return company_id, plan
+
+
 @app.post("/api/v1/billing/plan", response_model=SubscriptionResponse)
 def select_subscription_plan(data: SubscriptionPlanUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if data.plan != SubscriptionPlan.free:
+        raise HTTPException(status_code=400, detail="Choose a paid plan through secure Stripe checkout.")
     subscription = get_or_create_subscription(user, db)
-    subscription.plan = data.plan
-    if data.plan == SubscriptionPlan.free:
-        subscription.status = "active"
-        subscription.trial_ends_at = None
-    else:
-        subscription.status = "trial"
-        subscription.trial_ends_at = datetime.now(timezone.utc) + timedelta(days=14)
+    subscription.plan = SubscriptionPlan.free
+    subscription.status = "active"
+    subscription.trial_ends_at = None
     db.commit()
     db.refresh(subscription)
     return subscription
+
+
+@app.post("/api/v1/billing/checkout", response_model=CheckoutSessionResponse)
+def create_checkout_session(data: CheckoutSessionRequest, user: User = Depends(get_current_user)):
+    if data.plan not in (SubscriptionPlan.basic, SubscriptionPlan.professional):
+        raise HTTPException(status_code=400, detail="This plan does not require Stripe checkout.")
+
+    api_key = settings.stripe_secret_key.strip() if settings.stripe_secret_key else ""
+    price_id = stripe_price_for_plan(data.plan)
+    if not api_key or not price_id:
+        raise HTTPException(status_code=503, detail="Payments are not configured yet. Please contact BuildSmart support.")
+
+    stripe.api_key = api_key
+    base_url = settings.app_base_url.rstrip("/")
+    metadata = {"company_id": str(user.company_id), "plan": data.plan.value}
+    try:
+        checkout = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": price_id, "quantity": 1}],
+            customer_email=user.email,
+            client_reference_id=str(user.company_id),
+            metadata=metadata,
+            subscription_data={"metadata": metadata},
+            success_url=f"{base_url}/plans.html?checkout=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{base_url}/plans.html?checkout=cancelled",
+        )
+    except stripe.error.StripeError as exc:
+        raise HTTPException(status_code=502, detail="The payment provider is temporarily unavailable. Please try again later.") from exc
+
+    if not checkout.url:
+        raise HTTPException(status_code=502, detail="The payment page could not be created.")
+    return CheckoutSessionResponse(checkout_url=checkout.url)
+
+
+@app.post("/api/v1/billing/webhook", include_in_schema=False)
+async def stripe_webhook(request: FastAPIRequest, db: Session = Depends(get_db)):
+    webhook_secret = settings.stripe_webhook_secret.strip() if settings.stripe_webhook_secret else ""
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="Stripe webhook is not configured.")
+
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)
+    except (ValueError, stripe.error.SignatureVerificationError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook signature.") from exc
+
+    event_type = event.get("type")
+    event_object = event.get("data", {}).get("object")
+    metadata = stripe_metadata(event_object)
+    if not metadata:
+        return {"received": True}
+
+    company_id, plan = metadata
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        update_subscription_from_stripe(company_id, plan, "active", db)
+    elif event_type == "customer.subscription.updated":
+        status_value = event_object.get("status", "active")
+        update_subscription_from_stripe(company_id, plan, status_value, db)
+    elif event_type == "customer.subscription.deleted":
+        update_subscription_from_stripe(company_id, SubscriptionPlan.free, "canceled", db)
+    return {"received": True}
 
 
 def parse_project_plan_response(response_data: dict) -> dict:
