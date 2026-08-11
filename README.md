@@ -18,7 +18,7 @@ The Plan page uses Stripe Checkout for Basic and Professional subscriptions. Con
 
 New workspaces confirm their email address with a one-time, six-digit code. Configure an SMTP provider in the API environment with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` and `SMTP_FROM` to deliver the code. Existing users can still sign in after an upgrade; verification is required for newly created accounts.
 
-When adding a client, users can select an individual or a company. A company is looked up securely by NIP in the GUS REGON service after `GUS_REGON_API_KEY` is configured. Obtain that key from the official [GUS API REGON portal](https://api.stat.gov.pl/home/regonapi) and keep it only in the deployment environment.
+When adding a client, users can select an individual or a company. For a company, the name, NIP and contact data are entered manually.
 
 ## Deploy on Railway
 
