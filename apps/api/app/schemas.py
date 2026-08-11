@@ -61,17 +61,6 @@ class ClientResponse(ClientCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
-class GusCompanyLookupRequest(BaseModel):
-    nip: str = Field(min_length=10, max_length=20)
-
-
-class GusCompanyLookupResponse(BaseModel):
-    name: str
-    nip: str
-    regon: str | None = None
-    address: str | None = None
-
-
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
     client_id: int | None = None
