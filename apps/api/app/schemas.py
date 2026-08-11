@@ -21,6 +21,20 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class RegistrationResponse(BaseModel):
+    verification_required: bool = True
+    message: str
+
+
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
 class UserResponse(BaseModel):
     id: int
     company_id: int
@@ -32,6 +46,8 @@ class UserResponse(BaseModel):
 
 class ClientCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
+    entity_type: Literal["individual", "company"] = "individual"
+    nip: str | None = None
     email: EmailStr | None = None
     phone: str | None = None
     address: str | None = None
@@ -40,8 +56,20 @@ class ClientCreate(BaseModel):
 
 class ClientResponse(ClientCreate):
     id: int
+    regon: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class GusCompanyLookupRequest(BaseModel):
+    nip: str = Field(min_length=10, max_length=20)
+
+
+class GusCompanyLookupResponse(BaseModel):
+    name: str
+    nip: str
+    regon: str | None = None
+    address: str | None = None
 
 
 class ProjectCreate(BaseModel):
