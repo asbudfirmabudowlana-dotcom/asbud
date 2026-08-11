@@ -25,13 +25,20 @@
 
 ## Płatności Stripe
 
-1. W panelu Stripe utwórz dwa miesięczne produkty: **BuildSmart AI Basic** (99 PLN) oraz **BuildSmart AI Professional** (249 PLN).
+1. W panelu Stripe utwórz dwa produkty: **BuildSmart AI Basic** oraz **BuildSmart AI Professional**. Dla każdego produktu utwórz dwie ceny cykliczne w PLN:
+
+   - Basic miesięcznie: **49,00 zł**, odnawianie co miesiąc;
+   - Basic rocznie: **529,20 zł**, odnawianie co rok (12 miesięcy z rabatem 10%);
+   - Professional miesięcznie: **149,00 zł**, odnawianie co miesiąc;
+   - Professional rocznie: **1 609,20 zł**, odnawianie co rok (12 miesięcy z rabatem 10%).
 2. W usłudze aplikacji `asbud` w Railway dodaj zmienne:
 
    ```text
    STRIPE_SECRET_KEY=sekretny-klucz-z-trybu-testowego-Stripe
-   STRIPE_PRICE_BASIC=id-ceny-Basic-zaczynające-się-od-price_
-   STRIPE_PRICE_PROFESSIONAL=id-ceny-Professional-zaczynające-się-od-price_
+   STRIPE_PRICE_BASIC_MONTHLY=id-ceny-Basic-miesięcznej-zaczynające-się-od-price_
+   STRIPE_PRICE_BASIC_YEARLY=id-ceny-Basic-rocznej-zaczynające-się-od-price_
+   STRIPE_PRICE_PROFESSIONAL_MONTHLY=id-ceny-Professional-miesięcznej-zaczynające-się-od-price_
+   STRIPE_PRICE_PROFESSIONAL_YEARLY=id-ceny-Professional-rocznej-zaczynające-się-od-price_
    APP_BASE_URL=https://asbud-production.up.railway.app
    ```
 
