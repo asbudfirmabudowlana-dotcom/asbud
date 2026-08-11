@@ -22,3 +22,20 @@
 - Klucza `OPENAI_API_KEY` nie umieszczaj w GitHubie ani w kodzie.
 - W Railway oznacz `OPENAI_API_KEY` i `JWT_SECRET` jako **Seal** po ich zapisaniu.
 - Baza jest wymagana: nie używaj lokalnego pliku SQLite w produkcji.
+
+## Płatności Stripe
+
+1. W panelu Stripe utwórz dwa miesięczne produkty: **BuildSmart AI Basic** (99 PLN) oraz **BuildSmart AI Professional** (249 PLN).
+2. W usłudze aplikacji `asbud` w Railway dodaj zmienne:
+
+   ```text
+   STRIPE_SECRET_KEY=sekretny-klucz-z-trybu-testowego-Stripe
+   STRIPE_PRICE_BASIC=id-ceny-Basic-zaczynające-się-od-price_
+   STRIPE_PRICE_PROFESSIONAL=id-ceny-Professional-zaczynające-się-od-price_
+   APP_BASE_URL=https://asbud-production.up.railway.app
+   ```
+
+   Oznacz `STRIPE_SECRET_KEY` jako **Seal**. Nie wpisuj tego klucza do GitHuba ani na czacie.
+3. W Stripe utwórz webhook dla adresu `https://asbud-production.up.railway.app/api/v1/billing/webhook` i wybierz zdarzenia `checkout.session.completed`, `customer.subscription.updated` oraz `customer.subscription.deleted`.
+4. Skopiuj sekret webhooka do zmiennej `STRIPE_WEBHOOK_SECRET` w Railway i oznacz go jako **Seal**.
+5. Na początek użyj trybu testowego Stripe. Dopiero po pomyślnym teście zamień wszystkie klucze, ceny i webhook na dane z trybu produkcyjnego.
