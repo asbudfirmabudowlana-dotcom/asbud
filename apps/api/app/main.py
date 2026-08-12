@@ -11,9 +11,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
-from app.models import Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateAttachment, EstimateDetails, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
+from app.models import AuditLog, Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateAttachment, EstimateDetails, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
+from app.rate_limit import client_address, enforce_rate_limit
 from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateAttachmentResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, EstimateUpdate, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
-from app.security import create_access_token, get_current_user, hash_password, verify_password
+from app.security import create_access_token, get_current_user, hash_password, require_roles, verify_password
 
 settings = get_settings()
 app = FastAPI(
@@ -21,7 +22,35 @@ app = FastAPI(
     description="Interfejs programistyczny platformy do zarządzania firmą budowlaną.",
     version="0.1.0",
 )
-app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.cors_origins.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[x.strip() for x in settings.cors_origins.split(",") if x.strip()],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+
+@app.middleware("http")
+async def apply_security_headers(request: FastAPIRequest, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if not request.url.path.startswith(("/docs", "/redoc", "/openapi.json")):
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+            "object-src 'none'; img-src 'self' data:; font-src 'self' data:; "
+            "connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        )
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
 
 
 @app.on_event("startup")
@@ -39,8 +68,22 @@ def health():
     return {"status": "ok"}
 
 
+def record_audit(db: Session, user: User, action: str, entity_type: str, entity_id: int | None = None) -> None:
+    """Zapisuje tylko metadane działania, nigdy hasła ani treść dokumentów."""
+    db.add(AuditLog(
+        company_id=user.company_id,
+        actor_user_id=user.id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    ))
+
+
 @app.post("/api/v1/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def register(data: RegisterRequest, db: Session = Depends(get_db)):
+def register(data: RegisterRequest, request: FastAPIRequest, db: Session = Depends(get_db)):
+    email_key = str(data.email).casefold()
+    enforce_rate_limit(f"register:ip:{client_address(request)}", 5, 3600)
+    enforce_rate_limit(f"register:email:{email_key}", 3, 3600)
     if db.scalar(select(User).where(User.email == data.email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     company = Company(name=data.company_name)
@@ -48,16 +91,23 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.flush()
     user = User(company_id=company.id, full_name=data.full_name, email=str(data.email), password_hash=hash_password(data.password), role="owner")
     db.add(user)
+    db.flush()
+    record_audit(db, user, "account.registered", "user", user.id)
     db.commit()
     db.refresh(user)
     return TokenResponse(access_token=create_access_token(user))
 
 
 @app.post("/api/v1/auth/login", response_model=TokenResponse)
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+def login(data: LoginRequest, request: FastAPIRequest, db: Session = Depends(get_db)):
+    email_key = str(data.email).casefold()
+    enforce_rate_limit(f"login:ip:{client_address(request)}", 20, 900)
+    enforce_rate_limit(f"login:email:{email_key}", 7, 900)
     user = db.scalar(select(User).where(User.email == data.email))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    record_audit(db, user, "account.logged_in", "user", user.id)
+    db.commit()
     return TokenResponse(access_token=create_access_token(user))
 
 
@@ -101,7 +151,7 @@ def get_company_profile(user: User = Depends(get_current_user), db: Session = De
 
 
 @app.put("/api/v1/company-profile", response_model=CompanyProfileResponse)
-def update_company_profile(data: CompanyProfileUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_company_profile(data: CompanyProfileUpdate, user: User = Depends(require_roles("owner", "administrator")), db: Session = Depends(get_db)):
     company = db.get(Company, user.company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -114,6 +164,7 @@ def update_company_profile(data: CompanyProfileUpdate, user: User = Depends(get_
         setattr(profile, field, value.strip() if isinstance(value, str) else value)
     if profile.full_name:
         company.name = profile.full_name
+    record_audit(db, user, "company_profile.updated", "company_profile", profile.id)
     db.commit()
     db.refresh(profile)
     return serialize_company_profile(company, profile)
@@ -161,7 +212,7 @@ def create_client(data: ClientCreate, user: User = Depends(get_current_user), db
             raise HTTPException(status_code=422, detail="Enter a NIP number for the company.")
         nip = normalize_nip(data.nip)
     client = Client(company_id=user.company_id, **values)
-    db.add(client); db.commit(); db.refresh(client)
+    db.add(client); db.flush(); record_audit(db, user, "client.created", "client", client.id); db.commit(); db.refresh(client)
     if nip:
         db.add(ClientCompanyDetails(
             client_id=client.id,
@@ -183,7 +234,7 @@ def create_project(data: ProjectCreate, user: User = Depends(get_current_user), 
     if data.client_id and not db.scalar(select(Client).where(Client.id == data.client_id, Client.company_id == user.company_id)):
         raise HTTPException(status_code=404, detail="Client not found")
     project = Project(company_id=user.company_id, **data.model_dump())
-    db.add(project); db.commit(); db.refresh(project)
+    db.add(project); db.flush(); record_audit(db, user, "project.created", "project", project.id); db.commit(); db.refresh(project)
     return project
 
 
@@ -193,9 +244,9 @@ def list_employees(user: User = Depends(get_current_user), db: Session = Depends
 
 
 @app.post("/api/v1/employees", response_model=EmployeeResponse, status_code=status.HTTP_201_CREATED)
-def create_employee(data: EmployeeCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_employee(data: EmployeeCreate, user: User = Depends(require_roles("owner", "administrator")), db: Session = Depends(get_db)):
     employee = Employee(company_id=user.company_id, **data.model_dump())
-    db.add(employee); db.commit(); db.refresh(employee)
+    db.add(employee); db.flush(); record_audit(db, user, "employee.created", "employee", employee.id); db.commit(); db.refresh(employee)
     return employee
 
 
@@ -211,7 +262,7 @@ def create_task(data: TaskCreate, user: User = Depends(get_current_user), db: Se
     if data.assigned_employee_id and not db.scalar(select(Employee).where(Employee.id == data.assigned_employee_id, Employee.company_id == user.company_id)):
         raise HTTPException(status_code=404, detail="Employee not found")
     task = Task(company_id=user.company_id, **data.model_dump())
-    db.add(task); db.commit(); db.refresh(task)
+    db.add(task); db.flush(); record_audit(db, user, "task.created", "task", task.id); db.commit(); db.refresh(task)
     return task
 
 
@@ -264,7 +315,7 @@ def list_invoices(user: User = Depends(get_current_user), db: Session = Depends(
 
 
 @app.post("/api/v1/invoices", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
-def create_invoice(data: InvoiceCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_invoice(data: InvoiceCreate, user: User = Depends(require_roles("owner", "administrator", "accountant")), db: Session = Depends(get_db)):
     validate_invoice_links(data.client_id, data.project_id, user, db)
     invoice = Invoice(company_id=user.company_id, **data.model_dump(exclude=INVOICE_DETAIL_FIELDS))
     db.add(invoice)
@@ -272,13 +323,14 @@ def create_invoice(data: InvoiceCreate, user: User = Depends(get_current_user), 
     details_values = data.model_dump(include=INVOICE_DETAIL_FIELDS)
     if any(value is not None and str(value).strip() for value in details_values.values()):
         db.add(InvoiceDetails(invoice_id=invoice.id, **details_values))
+    record_audit(db, user, "invoice.created", "invoice", invoice.id)
     db.commit()
     db.refresh(invoice)
     return serialize_invoice(invoice, db)
 
 
 @app.patch("/api/v1/invoices/{invoice_id}", response_model=InvoiceResponse)
-def update_invoice(invoice_id: int, data: InvoiceUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_invoice(invoice_id: int, data: InvoiceUpdate, user: User = Depends(require_roles("owner", "administrator", "accountant")), db: Session = Depends(get_db)):
     invoice = get_company_invoice(invoice_id, user, db)
     values = data.model_dump(exclude_unset=True)
     client_id = values.get("client_id", invoice.client_id)
@@ -294,13 +346,14 @@ def update_invoice(invoice_id: int, data: InvoiceUpdate, user: User = Depends(ge
             db.add(details)
         for field, value in detail_values.items():
             setattr(details, field, value.strip() if isinstance(value, str) else value)
+    record_audit(db, user, "invoice.updated", "invoice", invoice.id)
     db.commit()
     db.refresh(invoice)
     return serialize_invoice(invoice, db)
 
 
 @app.delete("/api/v1/invoices/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_invoice(invoice_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_invoice(invoice_id: int, user: User = Depends(require_roles("owner", "administrator", "accountant")), db: Session = Depends(get_db)):
     invoice = get_company_invoice(invoice_id, user, db)
     attachments = db.scalars(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id)).all()
     for attachment in attachments:
@@ -308,6 +361,7 @@ def delete_invoice(invoice_id: int, user: User = Depends(get_current_user), db: 
     details = db.scalar(select(InvoiceDetails).where(InvoiceDetails.invoice_id == invoice.id))
     if details:
         db.delete(details)
+    record_audit(db, user, "invoice.deleted", "invoice", invoice.id)
     db.delete(invoice)
     db.commit()
 
@@ -441,7 +495,7 @@ def list_estimates(user: User = Depends(get_current_user), db: Session = Depends
 
 
 @app.post("/api/v1/estimates", response_model=EstimateResponse, status_code=status.HTTP_201_CREATED)
-def create_estimate(data: EstimateCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_estimate(data: EstimateCreate, user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")), db: Session = Depends(get_db)):
     if db.scalar(select(Estimate).where(Estimate.company_id == user.company_id, Estimate.number == data.number)):
         raise HTTPException(status_code=409, detail="Estimate number already exists")
     validate_estimate_links(data.client_id, data.project_id, user, db)
@@ -453,6 +507,7 @@ def create_estimate(data: EstimateCreate, user: User = Depends(get_current_user)
     details_values = data.model_dump(include=ESTIMATE_DETAIL_FIELDS)
     if any(value is not None and str(value).strip() for value in details_values.values()):
         db.add(EstimateDetails(estimate_id=estimate.id, **details_values))
+    record_audit(db, user, "estimate.created", "estimate", estimate.id)
     db.commit()
     db.refresh(estimate)
     for item in items:
@@ -461,7 +516,7 @@ def create_estimate(data: EstimateCreate, user: User = Depends(get_current_user)
 
 
 @app.patch("/api/v1/estimates/{estimate_id}", response_model=EstimateResponse)
-def update_estimate(estimate_id: int, data: EstimateUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_estimate(estimate_id: int, data: EstimateUpdate, user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")), db: Session = Depends(get_db)):
     estimate = get_company_estimate(estimate_id, user, db)
     values = data.model_dump(exclude_unset=True)
     client_id = values.get("client_id", estimate.client_id)
@@ -486,6 +541,7 @@ def update_estimate(estimate_id: int, data: EstimateUpdate, user: User = Depends
             db.add(details)
         for field, value in detail_values.items():
             setattr(details, field, value.strip() if isinstance(value, str) else value)
+    record_audit(db, user, "estimate.updated", "estimate", estimate.id)
     db.commit()
     db.refresh(estimate)
     items = db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all()
@@ -493,7 +549,7 @@ def update_estimate(estimate_id: int, data: EstimateUpdate, user: User = Depends
 
 
 @app.delete("/api/v1/estimates/{estimate_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_estimate(estimate_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_estimate(estimate_id: int, user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")), db: Session = Depends(get_db)):
     estimate = get_company_estimate(estimate_id, user, db)
     for attachment in db.scalars(select(EstimateAttachment).where(EstimateAttachment.estimate_id == estimate.id)).all():
         db.delete(attachment)
@@ -502,6 +558,7 @@ def delete_estimate(estimate_id: int, user: User = Depends(get_current_user), db
         db.delete(details)
     for item in db.scalars(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id)).all():
         db.delete(item)
+    record_audit(db, user, "estimate.deleted", "estimate", estimate.id)
     db.delete(estimate)
     db.commit()
 
@@ -617,20 +674,21 @@ def stripe_metadata(payload: object) -> tuple[int, SubscriptionPlan] | None:
 
 
 @app.post("/api/v1/billing/plan", response_model=SubscriptionResponse)
-def select_subscription_plan(data: SubscriptionPlanUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def select_subscription_plan(data: SubscriptionPlanUpdate, user: User = Depends(require_roles("owner", "administrator")), db: Session = Depends(get_db)):
     if data.plan != SubscriptionPlan.free:
         raise HTTPException(status_code=400, detail="Choose a paid plan through secure Stripe checkout.")
     subscription = get_or_create_subscription(user, db)
     subscription.plan = SubscriptionPlan.free
     subscription.status = "active"
     subscription.trial_ends_at = None
+    record_audit(db, user, "billing.plan_changed", "subscription", subscription.id)
     db.commit()
     db.refresh(subscription)
     return subscription
 
 
 @app.post("/api/v1/billing/checkout", response_model=CheckoutSessionResponse)
-def create_checkout_session(data: CheckoutSessionRequest, user: User = Depends(get_current_user)):
+def create_checkout_session(data: CheckoutSessionRequest, user: User = Depends(require_roles("owner", "administrator")), db: Session = Depends(get_db)):
     if data.plan not in (SubscriptionPlan.basic, SubscriptionPlan.professional):
         raise HTTPException(status_code=400, detail="This plan does not require Stripe checkout.")
 
@@ -642,6 +700,8 @@ def create_checkout_session(data: CheckoutSessionRequest, user: User = Depends(g
     stripe.api_key = api_key
     base_url = settings.app_base_url.rstrip("/")
     metadata = {"company_id": str(user.company_id), "plan": data.plan.value, "billing_cycle": data.billing_cycle}
+    record_audit(db, user, "billing.checkout_started", "subscription")
+    db.commit()
     try:
         checkout = stripe.checkout.Session.create(
             mode="subscription",
@@ -752,6 +812,7 @@ def parse_openai_text_response(response_data: dict) -> str:
 
 @app.post("/api/v1/ai/project-plan", response_model=AiProjectPlanResponse)
 def generate_project_plan(data: AiProjectPlanRequest, user: User = Depends(get_current_user)):
+    enforce_rate_limit(f"ai:company:{user.company_id}", 30, 3600)
     # Hosted platforms can accidentally add a trailing line break when a secret is pasted.
     # Strip surrounding whitespace before using the value as an HTTP header.
     api_key = settings.openai_api_key.strip() if settings.openai_api_key else ""
@@ -830,6 +891,7 @@ oraz 3–6 ryzyk. Każdy element listy powinien być konkretny i zwięzły."""
 
 @app.post("/api/v1/ai/consultant", response_model=AiConsultantResponse)
 def chat_with_consultant(data: AiConsultantRequest, user: User = Depends(get_current_user)):
+    enforce_rate_limit(f"ai:company:{user.company_id}", 30, 3600)
     api_key = settings.openai_api_key.strip() if settings.openai_api_key else ""
     if not api_key:
         raise HTTPException(status_code=503, detail="AI is not configured. Add OPENAI_API_KEY to the server environment.")
