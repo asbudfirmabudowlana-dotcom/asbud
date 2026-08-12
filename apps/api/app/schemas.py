@@ -21,6 +21,29 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    password: str = Field(min_length=10, max_length=128)
+
+
+class TwoFactorCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=12)
+
+
+class TwoFactorSetupResponse(BaseModel):
+    manual_entry_key: str
+    account_name: EmailStr
+    issuer: str = "BuildSmart AI"
+
+
+class TwoFactorStatusResponse(BaseModel):
+    enabled: bool
+
+
 class UserResponse(BaseModel):
     id: int
     company_id: int
