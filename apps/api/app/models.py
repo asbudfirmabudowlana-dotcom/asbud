@@ -79,6 +79,18 @@ class User(Base):
     company: Mapped[Company] = relationship()
 
 
+class AuditLog(Base):
+    """Minimalny, niezmienialny ślad kluczowych działań w obrębie firmy."""
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80))
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class Client(Base):
     __tablename__ = "clients"
     id: Mapped[int] = mapped_column(primary_key=True)
