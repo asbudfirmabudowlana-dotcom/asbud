@@ -21,6 +21,48 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://buildsmart:change-me-in-production@db:5432/buildsmart}
       JWT_SECRET: ${JWT_SECRET:-development-only-change-me}
       CORS_ORIGINS: http://localhost:3000
+      SESSION_COOKIE_SECURE: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-buildsmart}
+      POSTGRES_USER: ${POSTGRES_USER:-buildsmart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./apps/api
+    env_file:
+      - ./apps/api/.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://buildsmart:change-me-in-production@db:5432/buildsmart}
+      JWT_SECRET: ${JWT_SECRET:-development-only-change-me}
+      CORS_ORIGINS: http://localhost:3000
     depends_on:
       db:
         condition: service_healthy
