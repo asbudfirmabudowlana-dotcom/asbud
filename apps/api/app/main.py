@@ -4,7 +4,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import stripe
 from fastapi import Depends, FastAPI, File, HTTPException, Request as FastAPIRequest, UploadFile, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
@@ -79,6 +79,21 @@ def record_audit(db: Session, user: User, action: str, entity_type: str, entity_
     ))
 
 
+def issue_session(user: User) -> JSONResponse:
+    token = create_access_token(user)
+    response = JSONResponse(content=TokenResponse(access_token=token).model_dump())
+    response.set_cookie(
+        key="buildsmart_session",
+        value=token,
+        max_age=settings.access_token_expire_minutes * 60,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
 @app.post("/api/v1/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def register(data: RegisterRequest, request: FastAPIRequest, db: Session = Depends(get_db)):
     email_key = str(data.email).casefold()
@@ -95,7 +110,7 @@ def register(data: RegisterRequest, request: FastAPIRequest, db: Session = Depen
     record_audit(db, user, "account.registered", "user", user.id)
     db.commit()
     db.refresh(user)
-    return TokenResponse(access_token=create_access_token(user))
+    return issue_session(user)
 
 
 @app.post("/api/v1/auth/login", response_model=TokenResponse)
@@ -108,7 +123,14 @@ def login(data: LoginRequest, request: FastAPIRequest, db: Session = Depends(get
         raise HTTPException(status_code=401, detail="Invalid email or password")
     record_audit(db, user, "account.logged_in", "user", user.id)
     db.commit()
-    return TokenResponse(access_token=create_access_token(user))
+    return issue_session(user)
+
+
+@app.post("/api/v1/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout():
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(key="buildsmart_session", path="/")
+    return response
 
 
 @app.get("/api/v1/auth/me", response_model=UserResponse)
