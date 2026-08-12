@@ -1,20 +1,27 @@
 import json
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import stripe
+import pyotp
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, HTTPException, Request as FastAPIRequest, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
-from app.models import AuditLog, Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateAttachment, EstimateDetails, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
+from app.attachment_security import validate_and_scan_attachment
+from app.mail import send_password_reset_email
+from app.models import AuditLog, Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateAttachment, EstimateDetails, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, PasswordResetToken, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
 from app.rate_limit import client_address, enforce_rate_limit
-from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateAttachmentResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, EstimateUpdate, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, UserResponse)
-from app.security import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateAttachmentResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, EstimateUpdate, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, PasswordResetConfirm, PasswordResetRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, TwoFactorCodeRequest, TwoFactorSetupResponse, TwoFactorStatusResponse, UserResponse)
+from app.security import create_access_token, create_two_factor_challenge, get_current_user, hash_password, read_two_factor_challenge, require_roles, verify_password
 
 settings = get_settings()
 app = FastAPI(
@@ -56,6 +63,16 @@ async def apply_security_headers(request: FastAPIRequest, call_next):
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
+    existing_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    additions = {
+        "session_version": "session_version INTEGER NOT NULL DEFAULT 1",
+        "two_factor_secret": "two_factor_secret VARCHAR(512)",
+        "two_factor_enabled": "two_factor_enabled BOOLEAN NOT NULL DEFAULT false",
+    }
+    with engine.begin() as connection:
+        for column, statement in additions.items():
+            if column not in existing_columns:
+                connection.execute(text(f"ALTER TABLE users ADD COLUMN {statement}"))
 
 
 @app.get("/", include_in_schema=False)
@@ -91,7 +108,45 @@ def issue_session(user: User) -> JSONResponse:
         samesite="lax",
         path="/",
     )
+    response.delete_cookie(key="buildsmart_2fa_pending", path="/")
     return response
+
+
+def issue_two_factor_challenge(user: User) -> JSONResponse:
+    response = JSONResponse(content={"requires_two_factor": True})
+    response.set_cookie(
+        key="buildsmart_2fa_pending",
+        value=create_two_factor_challenge(user),
+        max_age=300,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+def two_factor_cipher() -> Fernet:
+    key = settings.two_factor_encryption_key.strip() if settings.two_factor_encryption_key else ""
+    if not key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="2FA nie jest jeszcze skonfigurowane. Skontaktuj się z administratorem.")
+    try:
+        return Fernet(key.encode("utf-8"))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Konfiguracja 2FA jest nieprawidłowa.") from exc
+
+
+def read_user_two_factor_secret(user: User) -> str:
+    if not user.two_factor_secret:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="2FA nie zostało skonfigurowane.")
+    try:
+        return two_factor_cipher().decrypt(user.two_factor_secret.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Nie można odczytać konfiguracji 2FA.") from exc
+
+
+def normalize_two_factor_code(value: str) -> str:
+    return "".join(character for character in value if character.isdigit())
 
 
 @app.post("/api/v1/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -121,6 +176,10 @@ def login(data: LoginRequest, request: FastAPIRequest, db: Session = Depends(get
     user = db.scalar(select(User).where(User.email == data.email))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.two_factor_enabled:
+        record_audit(db, user, "account.two_factor_challenged", "user", user.id)
+        db.commit()
+        return issue_two_factor_challenge(user)
     record_audit(db, user, "account.logged_in", "user", user.id)
     db.commit()
     return issue_session(user)
@@ -131,6 +190,102 @@ def logout():
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.delete_cookie(key="buildsmart_session", path="/")
     return response
+
+
+@app.post("/api/v1/auth/password-reset/request", status_code=status.HTTP_204_NO_CONTENT)
+def request_password_reset(data: PasswordResetRequest, request: FastAPIRequest, db: Session = Depends(get_db)):
+    email = str(data.email).casefold()
+    enforce_rate_limit(f"reset:ip:{client_address(request)}", 10, 3600)
+    enforce_rate_limit(f"reset:email:{email}", 3, 3600)
+    user = db.scalar(select(User).where(User.email == data.email))
+    if not user:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    for previous in db.scalars(select(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))).all():
+        db.delete(previous)
+    db.add(PasswordResetToken(user_id=user.id, token_hash=token_hash, expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)))
+    record_audit(db, user, "account.password_reset_requested", "user", user.id)
+    db.commit()
+    reset_link = f"{settings.app_base_url.rstrip('/')}/reset-password.html?token={raw_token}"
+    try:
+        send_password_reset_email(user.email, reset_link)
+    except HTTPException:
+        # A public reset endpoint must not disclose whether this address is an account
+        # or whether the delivery provider is temporarily unavailable.
+        record_audit(db, user, "account.password_reset_delivery_failed", "user", user.id)
+        db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/v1/auth/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
+def confirm_password_reset(data: PasswordResetConfirm, db: Session = Depends(get_db)):
+    token_hash = hashlib.sha256(data.token.encode("utf-8")).hexdigest()
+    reset = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash, PasswordResetToken.used_at.is_(None)))
+    if not reset or reset.expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Link do zmiany hasła jest nieprawidłowy lub wygasł.")
+    user = db.get(User, reset.user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Link do zmiany hasła jest nieprawidłowy lub wygasł.")
+    user.password_hash = hash_password(data.password)
+    user.session_version += 1
+    reset.used_at = datetime.now(timezone.utc)
+    record_audit(db, user, "account.password_reset_completed", "user", user.id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/v1/auth/2fa", response_model=TwoFactorStatusResponse)
+def two_factor_status(user: User = Depends(get_current_user)):
+    return TwoFactorStatusResponse(enabled=user.two_factor_enabled)
+
+
+@app.post("/api/v1/auth/2fa/setup", response_model=TwoFactorSetupResponse)
+def setup_two_factor(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    secret = pyotp.random_base32()
+    user.two_factor_secret = two_factor_cipher().encrypt(secret.encode("utf-8")).decode("utf-8")
+    user.two_factor_enabled = False
+    record_audit(db, user, "account.two_factor_setup_started", "user", user.id)
+    db.commit()
+    return TwoFactorSetupResponse(manual_entry_key=secret, account_name=user.email)
+
+
+@app.post("/api/v1/auth/2fa/enable", response_model=TwoFactorStatusResponse)
+def enable_two_factor(data: TwoFactorCodeRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    secret = read_user_two_factor_secret(user)
+    if not pyotp.TOTP(secret).verify(normalize_two_factor_code(data.code), valid_window=1):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Kod z aplikacji uwierzytelniającej jest nieprawidłowy.")
+    user.two_factor_enabled = True
+    record_audit(db, user, "account.two_factor_enabled", "user", user.id)
+    db.commit()
+    return TwoFactorStatusResponse(enabled=True)
+
+
+@app.post("/api/v1/auth/2fa/verify", response_model=TokenResponse)
+def verify_two_factor_login(data: TwoFactorCodeRequest, request: FastAPIRequest, db: Session = Depends(get_db)):
+    challenge = request.cookies.get("buildsmart_2fa_pending", "")
+    enforce_rate_limit(f"two-factor:ip:{client_address(request)}", 10, 300)
+    user_id, session_version = read_two_factor_challenge(challenge)
+    user = db.get(User, user_id)
+    if not user or not user.two_factor_enabled or user.session_version != session_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Kod weryfikacyjny wygasł. Zaloguj się ponownie.")
+    if not pyotp.TOTP(read_user_two_factor_secret(user)).verify(normalize_two_factor_code(data.code), valid_window=1):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Kod z aplikacji uwierzytelniającej jest nieprawidłowy.")
+    record_audit(db, user, "account.logged_in_with_two_factor", "user", user.id)
+    db.commit()
+    return issue_session(user)
+
+
+@app.post("/api/v1/auth/2fa/disable", response_model=TwoFactorStatusResponse)
+def disable_two_factor(data: TwoFactorCodeRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not user.two_factor_enabled or not pyotp.TOTP(read_user_two_factor_secret(user)).verify(normalize_two_factor_code(data.code), valid_window=1):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Kod z aplikacji uwierzytelniającej jest nieprawidłowy.")
+    user.two_factor_enabled = False
+    user.two_factor_secret = None
+    user.session_version += 1
+    record_audit(db, user, "account.two_factor_disabled", "user", user.id)
+    db.commit()
+    return TwoFactorStatusResponse(enabled=False)
 
 
 @app.get("/api/v1/auth/me", response_model=UserResponse)
@@ -226,7 +381,7 @@ def list_clients(user: User = Depends(get_current_user), db: Session = Depends(g
 
 
 @app.post("/api/v1/clients", response_model=ClientResponse, status_code=status.HTTP_201_CREATED)
-def create_client(data: ClientCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_client(data: ClientCreate, user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")), db: Session = Depends(get_db)):
     values = data.model_dump(exclude={"entity_type", "nip"})
     nip: str | None = None
     if data.entity_type == "company":
@@ -252,7 +407,7 @@ def list_projects(user: User = Depends(get_current_user), db: Session = Depends(
 
 
 @app.post("/api/v1/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
-def create_project(data: ProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_project(data: ProjectCreate, user: User = Depends(require_roles("owner", "administrator", "project_manager")), db: Session = Depends(get_db)):
     if data.client_id and not db.scalar(select(Client).where(Client.id == data.client_id, Client.company_id == user.company_id)):
         raise HTTPException(status_code=404, detail="Client not found")
     project = Project(company_id=user.company_id, **data.model_dump())
@@ -278,7 +433,7 @@ def list_tasks(user: User = Depends(get_current_user), db: Session = Depends(get
 
 
 @app.post("/api/v1/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
-def create_task(data: TaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_task(data: TaskCreate, user: User = Depends(require_roles("owner", "administrator", "project_manager")), db: Session = Depends(get_db)):
     if data.project_id and not db.scalar(select(Project).where(Project.id == data.project_id, Project.company_id == user.company_id)):
         raise HTTPException(status_code=404, detail="Project not found")
     if data.assigned_employee_id and not db.scalar(select(Employee).where(Employee.id == data.assigned_employee_id, Employee.company_id == user.company_id)):
@@ -400,7 +555,7 @@ def list_invoice_attachments(invoice_id: int, user: User = Depends(get_current_u
 async def upload_invoice_attachment(
     invoice_id: int,
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles("owner", "administrator", "accountant")),
     db: Session = Depends(get_db),
 ):
     invoice = get_company_invoice(invoice_id, user, db)
@@ -410,10 +565,11 @@ async def upload_invoice_attachment(
     if len(content) > MAX_INVOICE_ATTACHMENT_BYTES:
         raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
     file_name = Path(file.filename or "attachment").name[:255]
+    content_type = validate_and_scan_attachment(content, file.content_type)
     attachment = InvoiceAttachment(
         invoice_id=invoice.id,
         file_name=file_name,
-        content_type=(file.content_type or "application/octet-stream")[:120],
+        content_type=content_type,
         content=content,
     )
     db.add(attachment)
@@ -439,7 +595,7 @@ def download_invoice_attachment(invoice_id: int, attachment_id: int, user: User 
 
 
 @app.delete("/api/v1/invoices/{invoice_id}/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_invoice_attachment(invoice_id: int, attachment_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_invoice_attachment(invoice_id: int, attachment_id: int, user: User = Depends(require_roles("owner", "administrator", "accountant")), db: Session = Depends(get_db)):
     invoice = get_company_invoice(invoice_id, user, db)
     attachment = db.scalar(
         select(InvoiceAttachment).where(InvoiceAttachment.id == attachment_id, InvoiceAttachment.invoice_id == invoice.id)
@@ -597,7 +753,7 @@ def list_estimate_attachments(estimate_id: int, user: User = Depends(get_current
 async def upload_estimate_attachment(
     estimate_id: int,
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")),
     db: Session = Depends(get_db),
 ):
     estimate = get_company_estimate(estimate_id, user, db)
@@ -606,10 +762,11 @@ async def upload_estimate_attachment(
         raise HTTPException(status_code=422, detail="Select a file to upload")
     if len(content) > MAX_INVOICE_ATTACHMENT_BYTES:
         raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
+    content_type = validate_and_scan_attachment(content, file.content_type)
     attachment = EstimateAttachment(
         estimate_id=estimate.id,
         file_name=Path(file.filename or "attachment").name[:255],
-        content_type=(file.content_type or "application/octet-stream")[:120],
+        content_type=content_type,
         content=content,
     )
     db.add(attachment)
@@ -635,7 +792,7 @@ def download_estimate_attachment(estimate_id: int, attachment_id: int, user: Use
 
 
 @app.delete("/api/v1/estimates/{estimate_id}/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_estimate_attachment(estimate_id: int, attachment_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_estimate_attachment(estimate_id: int, attachment_id: int, user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")), db: Session = Depends(get_db)):
     estimate = get_company_estimate(estimate_id, user, db)
     attachment = db.scalar(
         select(EstimateAttachment).where(EstimateAttachment.id == attachment_id, EstimateAttachment.estimate_id == estimate.id)
