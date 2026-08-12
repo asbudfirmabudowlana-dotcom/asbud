@@ -30,12 +30,11 @@
   <script>
     const api = '/api/v1';
     const token = localStorage.getItem('buildsmart_token');
-    if (!token) location.assign('/');
     const labels = { free:'Free', basic:'Basic', professional:'Professional', enterprise:'Enterprise' };
     const pricing = { basic:{monthly:49,yearly:529.20}, professional:{monthly:149,yearly:1609.20} };
     const money = value => new Intl.NumberFormat('pl-PL',{style:'currency',currency:'PLN',minimumFractionDigits:value % 1 ? 2 : 0,maximumFractionDigits:2}).format(value);
     const selectedCycle = () => document.querySelector('input[name="billing-cycle"]:checked').value;
-    async function request(path, options = {}) { const response = await fetch(api + path, { ...options, headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token, ...(options.headers || {}) } }); const data = await response.json().catch(() => ({})); if (!response.ok) throw Error(data.detail || 'Nie udało się połączyć z serwerem.'); return data; }
+    async function request(path, options = {}) { const response = await fetch(api + path, { ...options, headers: { 'Content-Type':'application/json', ...(token ? { Authorization:'Bearer ' + token } : {}), ...(options.headers || {}) } }); const data = await response.json().catch(() => ({})); if (!response.ok) throw Error(data.detail || 'Nie udało się połączyć z serwerem.'); return data; }
     async function load() { const subscription = await request('/billing/subscription'); document.querySelector('#current').textContent = labels[subscription.plan]; }
     function updatePrices() { const cycle = selectedCycle(); document.querySelectorAll('[data-plan-card]').forEach(card => { const plan = card.dataset.planCard; const price = pricing[plan][cycle]; card.querySelector('[data-price]').innerHTML = cycle === 'monthly' ? `${money(price)} <small>/ mies.</small>` : `${money(price)} <small>/ rok</small>`; card.querySelector('[data-saving]').textContent = cycle === 'yearly' ? `Oszczędzasz ${money(pricing[plan].monthly * 12 - price)} rocznie (10%)` : ''; card.querySelector('.choose').textContent = cycle === 'monthly' ? `Wybierz ${plan === 'basic' ? 'Basic' : 'Professional'} — ${money(price)}/mies.` : `Zapłać ${money(price)} za rok`; }); }
     document.querySelectorAll('input[name="billing-cycle"]').forEach(input => input.addEventListener('change', updatePrices));
