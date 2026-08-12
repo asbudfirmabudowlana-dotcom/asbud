@@ -22,8 +22,30 @@ def verify_password(password: str, hashed: str) -> bool:
 
 def create_access_token(user: User) -> str:
     settings = get_settings()
-    payload = {"sub": str(user.id), "company_id": user.company_id, "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)}
+    payload = {"sub": str(user.id), "company_id": user.company_id, "sv": user.session_version, "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def create_two_factor_challenge(user: User) -> str:
+    settings = get_settings()
+    payload = {
+        "sub": str(user.id),
+        "purpose": "two_factor",
+        "sv": user.session_version,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def read_two_factor_challenge(token: str) -> tuple[int, int]:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        if payload.get("purpose") != "two_factor":
+            raise ValueError
+        return int(payload["sub"]), int(payload["sv"])
+    except (jwt.PyJWTError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Kod weryfikacyjny wygasł. Zaloguj się ponownie.") from exc
 
 
 def get_current_user(
@@ -43,6 +65,8 @@ def get_current_user(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if payload.get("sv") != user.session_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
     return user
 
 
