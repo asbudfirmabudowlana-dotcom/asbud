@@ -15,7 +15,9 @@
 <body>
   <section id="auth" class="auth">
     <div class="card"><div class="brand">BuildSmart <b>AI</b></div><h1 id="auth-title">Zaloguj się</h1><p id="auth-copy" class="hint">Zarządzaj firmą budowlaną w jednym miejscu.</p>
-      <form id="auth-form"><div id="company-field" class="field hidden"><label>Nazwa firmy<input name="company_name" minlength="2" /></label></div><div id="name-field" class="field hidden"><label>Imię i nazwisko<input name="full_name" minlength="2" /></label></div><div class="field"><label>Adres e-mail<input name="email" type="email" required /></label></div><div class="field"><label>Hasło<input name="password" type="password" minlength="10" required /></label></div><p id="auth-error" class="error"></p><button id="auth-submit" class="primary">Zaloguj się</button></form>
+      <form id="auth-form"><div id="company-field" class="field hidden"><label>Nazwa firmy<input name="company_name" minlength="2" /></label></div><div id="name-field" class="field hidden"><label>Imię i nazwisko<input name="full_name" minlength="2" /></label></div><div class="field"><label>Adres e-mail<input name="email" type="email" required /></label></div><div class="field"><label>Hasło<input name="password" type="password" minlength="10" required /></label></div><div id="two-factor-field" class="field hidden"><label>Kod z aplikacji uwierzytelniającej<input name="two_factor_code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" /></label></div><p id="auth-error" class="error"></p><button id="auth-submit" class="primary">Zaloguj się</button></form>
+      <p id="forgot-password" class="hint" style="text-align:center;margin:12px 0 0"><a href="/forgot-password.html">Nie pamiętasz hasła?</a></p>
+      <p class="hint" style="text-align:center;margin:8px 0 0"><a href="/privacy.html">Polityka prywatności</a></p>
       <p class="hint" style="text-align:center;margin:18px 0 0"><span id="switch-copy">Nie masz jeszcze konta?</span> <button id="switch-auth" class="link" type="button">Utwórz workspace</button></p>
     </div>
   </section>
@@ -74,12 +76,20 @@
     subscriptionButton.textContent = 'Plan';
     subscriptionButton.addEventListener('click', () => location.assign('/plans.html'));
     document.querySelector('#logout').before(subscriptionButton);
+
+    const securityButton = document.createElement('button');
+    securityButton.className = 'nav';
+    securityButton.textContent = 'Bezpieczeństwo';
+    securityButton.addEventListener('click', () => location.assign('/security.html'));
+    document.querySelector('#logout').before(securityButton);
   </script>
   <script>
     (() => {
       const authForm = document.querySelector('#auth-form');
       const authError = document.querySelector('#auth-error');
       const switchAuth = document.querySelector('#switch-auth');
+      const twoFactorField = document.querySelector('#two-factor-field');
+      let awaitingTwoFactor = false;
 
       async function apiRequest(path, options = {}) {
         const response = await fetch('/api/v1' + path, {
@@ -96,17 +106,31 @@
         const email = String(form.get('email') || '').trim();
         authError.textContent = '';
         try {
+          if (awaitingTwoFactor) {
+            await apiRequest('/auth/2fa/verify', { method: 'POST', body: JSON.stringify({ code: form.get('two_factor_code') }) });
+            localStorage.removeItem('buildsmart_token');
+            showApp();
+            return;
+          }
           if (register) {
             await apiRequest('/auth/register', { method: 'POST', body: JSON.stringify({ company_name: form.get('company_name'), full_name: form.get('full_name'), email, password: form.get('password') }) });
             localStorage.removeItem('buildsmart_token');
             showApp();
           } else {
-            await apiRequest('/auth/login', { method: 'POST', body: JSON.stringify({ email, password: form.get('password') }) });
+            const response = await apiRequest('/auth/login', { method: 'POST', body: JSON.stringify({ email, password: form.get('password') }) });
+            if (response.requires_two_factor) {
+              awaitingTwoFactor = true;
+              twoFactorField.classList.remove('hidden');
+              authError.textContent = 'Wpisz kod z aplikacji uwierzytelniającej.';
+              authForm.elements.namedItem('two_factor_code').focus();
+              return;
+            }
             localStorage.removeItem('buildsmart_token');
             showApp();
           }
         } catch (error) { authError.textContent = error.message; }
       };
+      switchAuth.addEventListener('click', () => { awaitingTwoFactor = false; twoFactorField.classList.add('hidden'); authForm.elements.namedItem('two_factor_code').value = ''; });
 
       const clientForm = document.querySelector('#client-form');
       const clientName = clientForm.querySelector('[name="name"]');
