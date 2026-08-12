@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "development-only-change-me"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+    session_cookie_secure: bool = True
     cors_origins: str = "http://localhost:3000"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-terra"
