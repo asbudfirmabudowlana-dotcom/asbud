@@ -11,6 +11,14 @@
    CORS_ORIGINS=https://asbud-production.up.railway.app
    SESSION_COOKIE_SECURE=true
    OPENAI_API_KEY=klucz-z-platform.openai.com
+   TWO_FACTOR_ENCRYPTION_KEY=nowy-klucz-Fernet-tylko-do-2FA
+   SMTP_HOST=adres-serwera-SMTP
+   SMTP_PORT=587
+   SMTP_USERNAME=adres-nadawcy
+   SMTP_PASSWORD=haslo-aplikacyjne-lub-haslo-SMTP
+   SMTP_FROM_EMAIL=adres-nadawcy
+   SMTP_USE_TLS=true
+   ATTACHMENT_SCANNING_REQUIRED=true
    ```
 
    Jeśli baza w Railway ma inną nazwę niż `Postgres`, wybierz jej `DATABASE_URL` z podpowiedzi w polu wartości zamiast przepisywać przykład.
