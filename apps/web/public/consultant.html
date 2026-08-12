@@ -29,7 +29,6 @@
   </main>
   <script>
     const token = localStorage.getItem('buildsmart_token');
-    if (!token) location.assign('/');
 
     const storageKey = 'buildsmart_consultant_messages';
     const messagesElement = document.querySelector('#messages');
@@ -65,7 +64,7 @@
       try {
         const response = await fetch('/api/v1/ai/consultant', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
           body: JSON.stringify({ messages: messages.slice(-12) }),
         });
         const data = await response.json().catch(() => ({}));
