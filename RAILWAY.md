@@ -9,6 +9,7 @@
    DATABASE_URL=${{Postgres.DATABASE_URL}}
    JWT_SECRET=własny-długi-losowy-tekst
    CORS_ORIGINS=https://asbud-production.up.railway.app
+   SESSION_COOKIE_SECURE=true
    OPENAI_API_KEY=klucz-z-platform.openai.com
    ```
 
