@@ -8,6 +8,7 @@
    ```text
    DATABASE_URL=${{Postgres.DATABASE_URL}}
    JWT_SECRET=własny-długi-losowy-tekst
+   CORS_ORIGINS=https://asbud-production.up.railway.app
    OPENAI_API_KEY=klucz-z-platform.openai.com
    ```
 
@@ -22,6 +23,8 @@
 - Klucza `OPENAI_API_KEY` nie umieszczaj w GitHubie ani w kodzie.
 - W Railway oznacz `OPENAI_API_KEY` i `JWT_SECRET` jako **Seal** po ich zapisaniu.
 - Baza jest wymagana: nie używaj lokalnego pliku SQLite w produkcji.
+- Ustaw regularne kopie zapasowe PostgreSQL oraz sprawdź, czy można je odtworzyć.
+- Klucze lub hasła wpisane przypadkowo na czacie traktuj jako ujawnione: unieważnij je i wygeneruj nowe.
 
 ## Płatności Stripe
 
