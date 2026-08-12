@@ -37,3 +37,12 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+def require_roles(*allowed_roles: str):
+    """Ogranicza czynności administracyjne do właściciela lub administratora."""
+    def role_guard(user: User = Depends(get_current_user)) -> User:
+        if user.role not in allowed_roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Nie masz uprawnień do tej czynności.")
+        return user
+    return role_guard
