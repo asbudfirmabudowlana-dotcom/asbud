@@ -38,7 +38,7 @@
       try {
         const response = await fetch(aiApi + '/ai/project-plan', {
           method: 'POST',
-          headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + aiToken },
+          headers: { 'Content-Type':'application/json', ...(aiToken ? { Authorization:'Bearer ' + aiToken } : {}) },
           body: JSON.stringify({ project_type:form.get('type'), location:form.get('location') || null, budget:form.get('budget') ? Number(form.get('budget')) : null, scope:form.get('scope') })
         });
         const data = await response.json().catch(() => ({}));
@@ -91,10 +91,6 @@
         responseError('Uzupełnij pole „Zakres prac”, aby przygotować plan.');
         return;
       }
-      if (!localStorage.getItem('buildsmart_token')) {
-        responseError('Zaloguj się w panelu BuildSmart AI, a następnie spróbuj ponownie.');
-        return;
-      }
 
       showResult();
       formStatus.textContent = 'Trwa przygotowywanie planu…';
@@ -103,7 +99,7 @@
       try {
         const response = await fetch('/api/v1/ai/project-plan', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('buildsmart_token') },
+          headers: { 'Content-Type': 'application/json', ...(localStorage.getItem('buildsmart_token') ? { Authorization: 'Bearer ' + localStorage.getItem('buildsmart_token') } : {}) },
           body: JSON.stringify({
             project_type: form.get('type'),
             location: form.get('location') || null,
