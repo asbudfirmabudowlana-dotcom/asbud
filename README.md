@@ -30,4 +30,6 @@ The repository now includes a root `Dockerfile` and `railway.toml`, so Railway s
 
 ## Security notes
 
-The API enforces workspace isolation through the authenticated user's `company_id`. Change all placeholder secrets before deployment and use managed PostgreSQL, Redis and object storage in production.
+The API enforces workspace isolation through the authenticated user's `company_id`, HTTP-only session cookies, short-lived access tokens, rate limits for authentication, role checks, audit logs, password reset, optional TOTP 2FA and strict attachment validation/scanning. Change all placeholder secrets before deployment and use managed PostgreSQL, Redis and object storage in production.
+
+Before accepting customer data, configure the SMTP provider, a sealed 2FA encryption key, a reachable ClamAV service and encrypted PostgreSQL backups. The deployment details are in [RAILWAY.md](RAILWAY.md); operational checklists are in [GDPR_OPERATIONS.md](GDPR_OPERATIONS.md) and [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
