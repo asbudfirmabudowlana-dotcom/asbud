@@ -147,13 +147,46 @@
       clientName.before(type);
       clientName.after(companyFields);
       const nipInput = companyFields.querySelector('[name="nip"]');
+      const lookupButton = document.createElement('button');
+      lookupButton.type = 'button';
+      lookupButton.className = 'secondary';
+      lookupButton.style.marginTop = '8px';
+      lookupButton.textContent = 'Pobierz dane z CEIDG';
+      const lookupStatus = document.createElement('small');
+      lookupStatus.className = 'hint';
+      lookupStatus.style.display = 'block';
+      lookupStatus.style.marginTop = '7px';
+      companyFields.append(lookupButton, lookupStatus);
+
+      lookupButton.addEventListener('click', async () => {
+        const nip = nipInput.value.trim();
+        if (!nip) { clientError.textContent = 'Wpisz NIP firmy, aby pobrać dane z CEIDG.'; return; }
+        const originalLabel = lookupButton.textContent;
+        clientError.textContent = '';
+        lookupStatus.textContent = '';
+        lookupButton.disabled = true;
+        lookupButton.textContent = 'Pobieranie danych…';
+        try {
+          const company = await request('/clients/ceidg?nip=' + encodeURIComponent(nip));
+          clientName.value = company.name;
+          const locality = [company.postal_code, company.city].filter(Boolean).join(' ');
+          clientAddress.value = [company.address, locality].filter(Boolean).join(', ');
+          lookupStatus.textContent = company.regon ? 'Dane pobrane z CEIDG. REGON: ' + company.regon : 'Dane pobrane z CEIDG. Sprawdź je przed zapisaniem klienta.';
+        } catch (failure) {
+          clientError.textContent = failure.message;
+        } finally {
+          lookupButton.disabled = false;
+          lookupButton.textContent = originalLabel;
+        }
+      });
 
       function updateClientType() {
         const company = type.value === 'company';
         companyFields.classList.toggle('hidden', !company);
+        lookupButton.disabled = !company;
         clientName.readOnly = false;
         clientName.placeholder = company ? 'Nazwa firmy' : 'Imię i nazwisko';
-        if (!company) nipInput.value = '';
+        if (!company) { nipInput.value = ''; lookupStatus.textContent = ''; }
       }
       type.addEventListener('change', updateClientType);
       loadClients = async () => {
