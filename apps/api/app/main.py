@@ -4,6 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import stripe
 import pyotp
@@ -20,7 +21,7 @@ from app.attachment_security import validate_and_scan_attachment
 from app.mail import send_password_reset_email
 from app.models import AuditLog, Client, ClientCompanyDetails, Company, CompanyProfile, Employee, Estimate, EstimateAttachment, EstimateDetails, EstimateItem, Invoice, InvoiceAttachment, InvoiceDetails, PasswordResetToken, Project, ProjectStatus, Subscription, SubscriptionPlan, Task, User
 from app.rate_limit import client_address, enforce_rate_limit
-from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateAttachmentResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, EstimateUpdate, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, PasswordResetConfirm, PasswordResetRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, TwoFactorCodeRequest, TwoFactorSetupResponse, TwoFactorStatusResponse, UserResponse)
+from app.schemas import (AiConsultantRequest, AiConsultantResponse, AiProjectPlanRequest, AiProjectPlanResponse, CeidgCompanyLookupResponse, CheckoutSessionRequest, CheckoutSessionResponse, ClientCreate, ClientResponse, CompanyProfileResponse, CompanyProfileUpdate, DashboardResponse, EmployeeCreate, EmployeeResponse, EstimateAttachmentResponse, EstimateCreate, EstimateItemResponse, EstimateResponse, EstimateUpdate, InvoiceAttachmentResponse, InvoiceCreate, InvoiceResponse, InvoiceUpdate, LoginRequest, PasswordResetConfirm, PasswordResetRequest, ProjectCreate, ProjectResponse, RegisterRequest, SubscriptionPlanUpdate, SubscriptionResponse, TaskCreate, TaskResponse, TokenResponse, TwoFactorCodeRequest, TwoFactorSetupResponse, TwoFactorStatusResponse, UserResponse)
 from app.security import create_access_token, create_two_factor_challenge, get_current_user, hash_password, read_two_factor_challenge, require_roles, verify_password
 
 settings = get_settings()
@@ -356,6 +357,105 @@ def normalize_nip(value: str) -> str:
     if checksum == 10 or checksum != int(nip[9]):
         raise HTTPException(status_code=422, detail="The NIP number has an invalid checksum.")
     return nip
+
+
+def ceidg_text(source: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = source.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def ceidg_address(record: dict) -> tuple[str | None, str | None, str | None]:
+    raw_address = record.get("adresDzialalnosci") or record.get("adres") or record.get("adresDoDoreczen") or {}
+    address = raw_address if isinstance(raw_address, dict) else {}
+    street = ceidg_text(address, "ulica")
+    building = ceidg_text(address, "budynek", "numerNieruchomosci", "numerBudynku")
+    unit = ceidg_text(address, "lokal", "numerLokalu")
+    street_line = " ".join(part for part in (street, building) if part)
+    if unit:
+        street_line = f"{street_line}/{unit}" if street_line else unit
+    return (
+        street_line or None,
+        ceidg_text(address, "kod", "kodPocztowy"),
+        ceidg_text(address, "miasto", "miejscowosc"),
+    )
+
+
+def choose_ceidg_company(companies: list[object]) -> dict | None:
+    records = [company for company in companies if isinstance(company, dict)]
+    if not records:
+        return None
+    return next((company for company in records if ceidg_text(company, "status") == "AKTYWNY"), records[0])
+
+
+@app.get("/api/v1/clients/ceidg", response_model=CeidgCompanyLookupResponse)
+def lookup_ceidg_company(
+    nip: str,
+    request: FastAPIRequest,
+    user: User = Depends(require_roles("owner", "administrator", "accountant", "project_manager")),
+    db: Session = Depends(get_db),
+):
+    """Ręczne uzupełnienie formularza klienta z API HD CEIDG.
+
+    Klucz CEIDG pozostaje wyłącznie na serwerze; do przeglądarki trafiają tylko
+    dane firmy, które użytkownik wybiera do zapisania.
+    """
+    normalized_nip = normalize_nip(nip)
+    if not settings.ceidg_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Integracja CEIDG nie jest jeszcze skonfigurowana.")
+
+    # CEIDG ogranicza cały klucz do 50 żądań na 3 minuty. Zostawiamy zapas i
+    # dodatkowo ograniczamy jednego użytkownika, żeby chronić wspólny limit.
+    enforce_rate_limit("ceidg:provider", 45, 180)
+    enforce_rate_limit(f"ceidg:user:{user.id}", 5, 180)
+    enforce_rate_limit(f"ceidg:ip:{client_address(request)}", 8, 180)
+
+    query = urlencode({"nip": normalized_nip, "limit": "25", "page": "0"})
+    url = f"{settings.ceidg_api_url.rstrip('?')}?{query}"
+    api_request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {settings.ceidg_api_key}",
+            "Accept": "application/json",
+            "User-Agent": "BuildSmart-AI/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(api_request, timeout=max(1, min(settings.ceidg_timeout_seconds, 20))) as response:
+            payload = json.loads(response.read(1_000_000).decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="CEIDG odrzucił klucz dostępu. Sprawdź konfigurację integracji.") from exc
+        if exc.code == 429:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Limit zapytań CEIDG został chwilowo wykorzystany. Spróbuj ponownie za kilka minut.") from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Usługa CEIDG jest chwilowo niedostępna.") from exc
+    except (URLError, TimeoutError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Nie udało się pobrać danych z CEIDG.") from exc
+
+    companies = payload.get("firmy", []) if isinstance(payload, dict) else []
+    company = choose_ceidg_company(companies)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nie znaleziono firmy w CEIDG dla podanego NIP.")
+
+    owner = company.get("wlasciciel") if isinstance(company.get("wlasciciel"), dict) else {}
+    company_name = ceidg_text(company, "nazwa", "nazwaFirmy")
+    if not company_name:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="CEIDG zwrócił niepełne dane firmy.")
+    address, postal_code, city = ceidg_address(company)
+    record_audit(db, user, "client.ceidg_looked_up", "client")
+    db.commit()
+    return CeidgCompanyLookupResponse(
+        name=company_name,
+        nip=ceidg_text(company, "nip") or ceidg_text(owner, "nip") or normalized_nip,
+        regon=ceidg_text(company, "regon") or ceidg_text(owner, "regon"),
+        address=address,
+        postal_code=postal_code,
+        city=city,
+        status=ceidg_text(company, "status"),
+    )
 
 
 def serialize_client(client: Client, db: Session) -> ClientResponse:

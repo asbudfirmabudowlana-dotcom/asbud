@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-terra"
+    ceidg_api_key: str | None = None
+    ceidg_api_url: str = "https://dane.biznes.gov.pl/api/ceidg/v3/firmy"
+    ceidg_timeout_seconds: int = 10
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
     stripe_price_basic_monthly: str | None = None

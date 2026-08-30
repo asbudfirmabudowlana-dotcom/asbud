@@ -11,6 +11,7 @@
    CORS_ORIGINS=https://asbud-production.up.railway.app
    SESSION_COOKIE_SECURE=true
    OPENAI_API_KEY=klucz-z-platform.openai.com
+   CEIDG_API_KEY=klucz-API-Hurtowni-Danych-CEIDG
    TWO_FACTOR_ENCRYPTION_KEY=nowy-klucz-Fernet-tylko-do-2FA
    SMTP_HOST=adres-serwera-SMTP
    SMTP_PORT=587
@@ -30,6 +31,7 @@
 ## Bezpieczeństwo
 
 - Klucza `OPENAI_API_KEY` nie umieszczaj w GitHubie ani w kodzie.
+- Klucz `CEIDG_API_KEY` pozostaw wyłącznie w Railway i oznacz jako **Seal**. Aplikacja wysyła go tylko do `dane.biznes.gov.pl` podczas ręcznego wyszukania firmy po NIP.
 - W Railway oznacz `OPENAI_API_KEY` i `JWT_SECRET` jako **Seal** po ich zapisaniu.
 - Baza jest wymagana: nie używaj lokalnego pliku SQLite w produkcji.
 - Ustaw regularne kopie zapasowe PostgreSQL oraz sprawdź, czy można je odtworzyć.
@@ -61,4 +63,4 @@
 
 ## Firmy i NIP
 
-W formularzu klienta wybierz **Firma**, a następnie wpisz ręcznie nazwę, NIP oraz dane kontaktowe. Aplikacja nie łączy się obecnie z bazą GUS.
+W formularzu klienta wybierz **Firma**, wpisz NIP i kliknij **Pobierz dane z CEIDG**. Nazwa i adres zostaną uzupełnione w formularzu; przed zapisaniem możesz je zmienić. Integracja obejmuje wyłącznie wpisy CEIDG (jednoosobowe działalności), nie spółki z KRS.
