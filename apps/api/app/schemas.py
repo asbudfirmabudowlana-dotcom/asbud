@@ -17,8 +17,9 @@ class LoginRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: str | None = None
     token_type: str = "bearer"
+    requires_two_factor: bool = False
 
 
 class PasswordResetRequest(BaseModel):
@@ -68,6 +69,16 @@ class ClientResponse(ClientCreate):
     regon: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class CeidgCompanyLookupResponse(BaseModel):
+    name: str
+    nip: str
+    regon: str | None = None
+    address: str | None = None
+    postal_code: str | None = None
+    city: str | None = None
+    status: str | None = None
 
 
 class ProjectCreate(BaseModel):
